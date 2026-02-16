@@ -133,7 +133,7 @@ async function loadNodeSpecification() {
   if (!Number.isInteger(nodeId)) return;
 
   try {
-    const res = await fetch(`/api/nodes?node_id=${encodeURIComponent(nodeId)}`);
+    const res = await fetch(window.buildApiUrl(`/api/nodes?node_id=${encodeURIComponent(nodeId)}`));
     if (!res.ok) return;
     const data = await res.json();
     const node = (data.nodes || [])[0];
@@ -184,7 +184,7 @@ async function fetchNodeName(nodeId) {
     return nodeNameCache[nodeId];
   }
   try {
-    const res = await fetch(`/api/nodes?node_id=${encodeURIComponent(nodeId)}`);
+    const res = await fetch(window.buildApiUrl(`/api/nodes?node_id=${encodeURIComponent(nodeId)}`));
     if (!res.ok) {
       nodeNameCache[nodeId] = null;
       return null;
@@ -226,7 +226,7 @@ async function loadPackets() {
     return;
   }
 
-  const url = new URL("/api/packets", window.location.origin);
+  const url = new URL(window.buildApiUrl("/api/packets"), window.location.origin);
   url.searchParams.set("node_id", String(nodeId));
   url.searchParams.set("limit", "1000");
 
