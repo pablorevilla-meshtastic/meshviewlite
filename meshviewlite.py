@@ -1,4 +1,16 @@
 #!/usr/bin/env python3
+"""meshviewlite MQTT collector.
+
+High-level flow:
+1. Parse CLI/TOML settings.
+2. Initialize SQLite schema and indexes.
+3. Connect to MQTT and consume messages.
+4. Decode payload (JSON or Meshtastic envelope).
+5. Store packet row (deduped by packet_id).
+6. Upsert latest node state (nodeinfo/telemetry/position).
+7. Periodically purge old packets (retention policy).
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -22,13 +34,18 @@ from google.protobuf.message import DecodeError
 from meshtastic.protobuf.config_pb2 import Config
 from meshtastic.protobuf.mesh_pb2 import Data
 from meshtastic.protobuf.mesh_pb2 import HardwareModel
+from meshtastic.protobuf.mesh_pb2 import Position
+from meshtastic.protobuf.mesh_pb2 import User
 from meshtastic.protobuf.mqtt_pb2 import ServiceEnvelope
+from meshtastic.protobuf.portnums_pb2 import PortNum
+from meshtastic.protobuf.telemetry_pb2 import Telemetry
 import paho.mqtt.client as mqtt
 
 PACKET_RETENTION_DAYS = 14
 PURGE_HOUR_UTC = 3
 
 
+# Port number -> human label map used when packet_type needs inference.
 PORTNUM_NAMES: dict[int, str] = {
     0: "Unknown",
     1: "Text",
@@ -80,11 +97,12 @@ class Settings:
     insecure_tls: bool
     payload_format: str
     primary_key: bytes | None
-    secondary_keys: list[bytes]
     skip_node_ids: set[int]
     retention_days: int
     purge_hour_utc: int
     log_packets: bool
+    log_decoded: bool
+    verbose_mqtt: bool
 
 
 def _strip_quotes(value: str) -> str:
@@ -115,11 +133,17 @@ def _parse_b64_keys(values: list[str], option_name: str) -> list[bytes]:
             if not value:
                 continue
             try:
-                keys.append(base64.b64decode(value, validate=True))
+                decoded = base64.b64decode(value, validate=True)
             except ValueError as exc:
                 raise argparse.ArgumentTypeError(
                     f"Invalid base64 value for {option_name}: '{item.strip()}'"
                 ) from exc
+            if len(decoded) not in (16, 24, 32):
+                raise argparse.ArgumentTypeError(
+                    f"Invalid AES key length for {option_name}: got {len(decoded)} bytes "
+                    f"(expected 16, 24, or 32)"
+                )
+            keys.append(decoded)
     return keys
 
 
@@ -155,6 +179,7 @@ def _cfg_value(
 
 
 def load_config(config_path: Path | None) -> dict[str, Any]:
+    """Load optional TOML config file."""
     if config_path is None:
         return {}
     with config_path.open("rb") as fh:
@@ -165,6 +190,7 @@ def load_config(config_path: Path | None) -> dict[str, Any]:
 
 
 def parse_args() -> Settings:
+    """Merge CLI args and TOML values into a normalized Settings object."""
     pre = argparse.ArgumentParser(add_help=False)
     pre.add_argument("--config", default=None, help="TOML config path")
     pre_args, _ = pre.parse_known_args()
@@ -251,19 +277,6 @@ def parse_args() -> Settings:
         help="Primary Meshtastic AES key (base64), used for encrypted packets",
     )
     parser.add_argument(
-        "--secondary-key-b64",
-        action="append",
-        default=_to_str_list(
-            _cfg_value(
-                config,
-                "secondary_key_b64",
-                section="meshtastic",
-                aliases=("secondary-key-b64", "secondary_keys"),
-            )
-        ),
-        help="Secondary Meshtastic AES key(s) in base64 (repeat or comma-separate)",
-    )
-    parser.add_argument(
         "--skip-node-id",
         action="append",
         default=_to_str_list(
@@ -296,6 +309,18 @@ def parse_args() -> Settings:
         default=bool(_cfg_value(config, "log_packets", section="mqtt", aliases=("log-packets",)) or False),
         help="Log one line per received packet to console",
     )
+    parser.add_argument(
+        "--log-decoded",
+        action=argparse.BooleanOptionalAction,
+        default=bool(_cfg_value(config, "log_decoded", section="mqtt", aliases=("log-decoded",)) or False),
+        help="Print decoded packet payload JSON for successfully decoded packets",
+    )
+    parser.add_argument(
+        "--verbose-mqtt",
+        action=argparse.BooleanOptionalAction,
+        default=bool(_cfg_value(config, "verbose_mqtt", section="mqtt", aliases=("verbose-mqtt",)) or False),
+        help="Verbose MQTT diagnostics (subscribe ACKs, disconnects, decode skips)",
+    )
 
     args = parser.parse_args()
     if not args.broker:
@@ -306,7 +331,6 @@ def parse_args() -> Settings:
         parsed = _parse_b64_keys([args.primary_key_b64], "--primary-key-b64")
         primary_key = parsed[0]
 
-    secondary_keys = _parse_b64_keys(args.secondary_key_b64, "--secondary-key-b64")
     skip_node_ids = _parse_node_ids(args.skip_node_id)
     if args.retention_days < 1:
         parser.error("--retention-days must be >= 1")
@@ -326,15 +350,17 @@ def parse_args() -> Settings:
         insecure_tls=args.insecure_tls,
         payload_format=args.payload_format,
         primary_key=primary_key,
-        secondary_keys=secondary_keys,
         skip_node_ids=skip_node_ids,
         retention_days=args.retention_days,
         purge_hour_utc=args.purge_hour_utc,
         log_packets=args.log_packets,
+        log_decoded=args.log_decoded,
+        verbose_mqtt=args.verbose_mqtt,
     )
 
 
 def init_db(conn: sqlite3.Connection) -> None:
+    """Create/migrate SQLite tables and indexes used by the collector."""
     desired_nodes_columns = [
         "id",
         "longname",
@@ -413,6 +439,7 @@ def init_db(conn: sqlite3.Connection) -> None:
 
 
 def as_text(value: Any) -> str | None:
+    """Convert simple scalar values to string; return None for unsupported types."""
     if value is None:
         return None
     if isinstance(value, (str, int, float, bool)):
@@ -420,7 +447,24 @@ def as_text(value: Any) -> str | None:
     return None
 
 
+def packet_field(payload: dict[str, Any], *names: str) -> Any:
+    """Get a field from top-level payload, then payload.packet, then payload.packet.decoded."""
+    packet = payload.get("packet") if isinstance(payload.get("packet"), dict) else {}
+    decoded = packet.get("decoded") if isinstance(packet.get("decoded"), dict) else {}
+    for name in names:
+        if name in payload:
+            return payload.get(name)
+    for name in names:
+        if name in packet:
+            return packet.get(name)
+    for name in names:
+        if name in decoded:
+            return decoded.get(name)
+    return None
+
+
 def infer_channel(topic: str) -> str | None:
+    """Infer mesh channel name from MQTT topic structure."""
     def _is_node_hex(value: str) -> bool:
         return re.fullmatch(r"![0-9a-fA-F]{8}", value) is not None
 
@@ -448,11 +492,20 @@ def infer_channel(topic: str) -> str | None:
 
 
 def infer_packet_type(payload: dict[str, Any]) -> str | None:
+    """Infer packet type from explicit fields or decoded port number."""
     def _port_name(value: Any) -> str | None:
         if isinstance(value, (int, float)):
             return PORTNUM_NAMES.get(int(value))
         if isinstance(value, str):
             stripped = value.strip()
+            enum_map = {
+                "POSITION_APP": "Position",
+                "NODEINFO_APP": "Node Info",
+                "TELEMETRY_APP": "Telemetry",
+            }
+            mapped = enum_map.get(stripped.upper())
+            if mapped:
+                return mapped
             try:
                 return PORTNUM_NAMES.get(int(stripped, 10))
             except ValueError:
@@ -460,10 +513,13 @@ def infer_packet_type(payload: dict[str, Any]) -> str | None:
         return None
 
     for key in ("type", "packet_type", "event", "kind"):
-        t = as_text(payload.get(key))
+        t = as_text(packet_field(payload, key))
         if t:
             return t
+    packet = payload.get("packet") if isinstance(payload.get("packet"), dict) else {}
     decoded = payload.get("decoded")
+    if not isinstance(decoded, dict):
+        decoded = packet.get("decoded")
     if isinstance(decoded, dict):
         raw_port = decoded.get("portnum") or decoded.get("port_num")
         name = _port_name(raw_port)
@@ -476,6 +532,13 @@ def infer_packet_type(payload: dict[str, Any]) -> str | None:
 
 
 def infer_node(payload: dict[str, Any], channel: str | None) -> dict[str, Any] | None:
+    """Extract node update fields from supported packet types.
+
+    Supported packet types:
+    - nodeinfo: names/model/role
+    - position/location: latitude/longitude
+    - telemetry: only last_seen and raw payload are updated by upsert
+    """
     nested_payload = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
     packet_type_raw = payload.get("type")
     packet_type = str(packet_type_raw).strip().lower().replace("_", "") if packet_type_raw is not None else ""
@@ -518,9 +581,13 @@ def infer_node(payload: dict[str, Any], channel: str | None) -> dict[str, Any] |
             return None
         return stripped
 
-    # For this feed, source node identity is explicitly in `from`.
-    node_id = as_text(payload.get("from"))
-    node_id = _normalize_node_id(node_id)
+    # Source node identity can be top-level (`from`) or nested (`packet.from`).
+    node_id = _normalize_node_id(packet_field(payload, "from", "from_id", "fromId"))
+    # NodeInfo may also contain user id like "!9ea14748".
+    if node_id is None and packet_type == "nodeinfo":
+        node_id = _normalize_node_id(
+            nested_payload.get("id") or nested_payload.get("user_id") or nested_payload.get("node_id")
+        )
     if not node_id:
         return None
 
@@ -566,10 +633,11 @@ def infer_node(payload: dict[str, Any], channel: str | None) -> dict[str, Any] |
 
 
 def store_packet(conn: sqlite3.Connection, topic: str, payload: dict[str, Any]) -> None:
+    """Insert packet row if packet_id is present and not already stored."""
     now = int(time.time())
     channel = infer_channel(topic)
     packet_type = infer_packet_type(payload)
-    packet_id_raw = payload.get("id")
+    packet_id_raw = packet_field(payload, "id")
     packet_id: int | None = None
     if isinstance(packet_id_raw, (int, float)):
         packet_id = int(packet_id_raw)
@@ -580,9 +648,9 @@ def store_packet(conn: sqlite3.Connection, topic: str, payload: dict[str, Any]) 
             packet_id = None
     if packet_id is None:
         return
-    from_id = as_text(payload.get("from") or payload.get("from_id") or payload.get("fromId"))
-    to_id = as_text(payload.get("to") or payload.get("to_id") or payload.get("toId"))
-    portnum = as_text(payload.get("portnum") or payload.get("port_num"))
+    from_id = as_text(packet_field(payload, "from", "from_id", "fromId"))
+    to_id = as_text(packet_field(payload, "to", "to_id", "toId"))
+    portnum = as_text(packet_field(payload, "portnum", "port_num"))
 
     conn.execute(
         """
@@ -605,6 +673,7 @@ def store_packet(conn: sqlite3.Connection, topic: str, payload: dict[str, Any]) 
 
 
 def upsert_node(conn: sqlite3.Connection, topic: str, payload: dict[str, Any]) -> None:
+    """Upsert latest node state from payload; preserve known fields when new values are null."""
     channel = infer_channel(topic)
     node = infer_node(payload, channel)
     if not node:
@@ -646,6 +715,7 @@ def upsert_node(conn: sqlite3.Connection, topic: str, payload: dict[str, Any]) -
 
 
 def decrypt_packet(packet: Any, key: bytes) -> bool:
+    """Attempt Meshtastic AES-CTR packet decryption in-place."""
     if packet.HasField("decoded"):
         return True
 
@@ -653,7 +723,11 @@ def decrypt_packet(packet: Any, key: bytes) -> bool:
     from_node_id = getattr(packet, "from").to_bytes(8, "little")
     nonce = packet_id + from_node_id
 
-    cipher = Cipher(algorithms.AES(key), modes.CTR(nonce))
+    try:
+        cipher = Cipher(algorithms.AES(key), modes.CTR(nonce))
+    except ValueError:
+        # Invalid AES key size should not crash message handling.
+        return False
     decryptor = cipher.decryptor()
     raw_proto = decryptor.update(packet.encrypted) + decryptor.finalize()
 
@@ -667,6 +741,7 @@ def decrypt_packet(packet: Any, key: bytes) -> bool:
 
 
 def _decode_json(payload_bytes: bytes) -> dict[str, Any] | None:
+    """Decode JSON payload bytes into dict."""
     try:
         payload = json.loads(payload_bytes.decode("utf-8", errors="replace"))
     except json.JSONDecodeError:
@@ -681,6 +756,7 @@ def _decode_meshtastic(
     keyring: list[bytes],
     skip_node_ids: set[int],
 ) -> dict[str, Any] | None:
+    """Decode Meshtastic ServiceEnvelope payload bytes into dict."""
     envelope = ServiceEnvelope()
     try:
         envelope.ParseFromString(payload_bytes)
@@ -711,14 +787,47 @@ def _decode_meshtastic(
         if isinstance(decoded, dict):
             payload.update(decoded)
 
+    # Decode app payload bytes into structured dict for known app ports.
+    # This makes fields human-readable and lets infer_node() consume nodeinfo/position.
+    app_payload_dict: dict[str, Any] | None = None
+    portnum = getattr(packet.decoded, "portnum", None)
+    if packet.decoded.payload:
+        try:
+            if portnum == PortNum.NODEINFO_APP:
+                msg = User()
+                msg.ParseFromString(packet.decoded.payload)
+                app_payload_dict = json_format.MessageToDict(
+                    msg, preserving_proto_field_name=True
+                )
+                payload["type"] = "nodeinfo"
+            elif portnum == PortNum.POSITION_APP:
+                msg = Position()
+                msg.ParseFromString(packet.decoded.payload)
+                app_payload_dict = json_format.MessageToDict(
+                    msg, preserving_proto_field_name=True
+                )
+                payload["type"] = "position"
+            elif portnum == PortNum.TELEMETRY_APP:
+                msg = Telemetry()
+                msg.ParseFromString(packet.decoded.payload)
+                app_payload_dict = json_format.MessageToDict(
+                    msg, preserving_proto_field_name=True
+                )
+                payload["type"] = "telemetry"
+        except DecodeError:
+            app_payload_dict = None
+
+    if isinstance(app_payload_dict, dict):
+        payload["payload"] = app_payload_dict
+
     return payload
 
 
 def decode_payload(settings: Settings, payload_bytes: bytes) -> dict[str, Any] | None:
+    """Decode payload according to selected mode: json, meshtastic, or auto."""
     keyring = []
     if settings.primary_key is not None:
         keyring.append(settings.primary_key)
-    keyring.extend(settings.secondary_keys)
 
     if settings.payload_format == "json":
         return _decode_json(payload_bytes)
@@ -734,12 +843,14 @@ def decode_payload(settings: Settings, payload_bytes: bytes) -> dict[str, Any] |
 
 
 def purge_old_packets(conn: sqlite3.Connection, now: int, retention_days: int) -> int:
+    """Delete packets older than retention window and return deleted row count."""
     cutoff = now - (retention_days * 24 * 60 * 60)
     cur = conn.execute("DELETE FROM packets WHERE received_at < ?", (cutoff,))
     return int(cur.rowcount or 0)
 
 
 def next_daily_purge_epoch(now: int, hour_utc: int) -> int:
+    """Compute next UTC epoch for daily purge at the given hour."""
     current = datetime.fromtimestamp(now, tz=timezone.utc)
     target = current.replace(hour=hour_utc, minute=0, second=0, microsecond=0)
     if target <= current:
@@ -748,23 +859,69 @@ def next_daily_purge_epoch(now: int, hour_utc: int) -> int:
 
 
 def on_connect(client: mqtt.Client, _userdata: Any, _flags: Any, rc: int, _props: Any = None) -> None:
+    """MQTT connect callback: subscribe to configured topic on success."""
     settings: Settings = client._meshviewlite_settings  # type: ignore[attr-defined]
     if rc == 0:
-        print(f"Connected to {settings.broker}:{settings.port}")
-        client.subscribe(settings.topic)
-        print(f"Subscribed: {settings.topic}")
+        print(f"Connected to {settings.broker}:{settings.port} (client_id={settings.client_id})")
+        result, mid = client.subscribe(settings.topic)
+        if result == mqtt.MQTT_ERR_SUCCESS:
+            print(f"Subscribe requested: topic='{settings.topic}' mid={mid}")
+        else:
+            print(f"Subscribe failed immediately: topic='{settings.topic}' rc={result}")
     else:
         print(f"Connection failed, rc={rc}")
 
 
+def on_subscribe(
+    client: mqtt.Client,
+    _userdata: Any,
+    mid: int,
+    granted_qos: Any,
+    _properties: Any = None,
+) -> None:
+    """MQTT subscribe callback: confirms broker accepted subscription."""
+    settings: Settings = client._meshviewlite_settings  # type: ignore[attr-defined]
+    print(f"Subscription acknowledged: topic='{settings.topic}' mid={mid} qos={granted_qos}")
+
+
+def on_disconnect(
+    client: mqtt.Client,
+    _userdata: Any,
+    rc: int,
+    _properties: Any = None,
+    _reason_code: Any = None,
+) -> None:
+    """MQTT disconnect callback: surface broker/network disconnect reasons."""
+    if rc == 0:
+        print("Disconnected from MQTT broker")
+    else:
+        print(f"Unexpected MQTT disconnect rc={rc}")
+
+
+def on_log(client: mqtt.Client, _userdata: Any, level: int, buf: str) -> None:
+    """Optional low-level MQTT protocol logs (enabled by --verbose-mqtt)."""
+    settings: Settings = client._meshviewlite_settings  # type: ignore[attr-defined]
+    if settings.verbose_mqtt:
+        print(f"[mqtt:{level}] {buf}")
+
+
 def on_message(client: mqtt.Client, _userdata: Any, msg: mqtt.MQTTMessage) -> None:
+    """MQTT message callback: decode, retain, store packet, and upsert node."""
     conn: sqlite3.Connection = client._meshviewlite_db  # type: ignore[attr-defined]
     settings: Settings = client._meshviewlite_settings  # type: ignore[attr-defined]
     now = int(time.time())
     next_purge_at: int = client._meshviewlite_next_purge_at  # type: ignore[attr-defined]
+    client._meshviewlite_rx_count += 1  # type: ignore[attr-defined]
 
     payload = decode_payload(settings, bytes(msg.payload))
     if not payload:
+        client._meshviewlite_decode_fail_count += 1  # type: ignore[attr-defined]
+        if settings.verbose_mqtt:
+            print(
+                f"RX undecodable topic='{msg.topic}' bytes={len(msg.payload)} "
+                f"total_rx={client._meshviewlite_rx_count} "
+                f"decode_fail={client._meshviewlite_decode_fail_count}"
+            )
         return
 
     try:
@@ -780,14 +937,23 @@ def on_message(client: mqtt.Client, _userdata: Any, msg: mqtt.MQTTMessage) -> No
         store_packet(conn, msg.topic, payload)
         upsert_node(conn, msg.topic, payload)
         if settings.log_packets:
-            packet_id = payload.get("id")
+            packet_id = packet_field(payload, "id")
             packet_type = infer_packet_type(payload) or "-"
-            from_id = payload.get("from") or payload.get("from_id") or payload.get("fromId") or "-"
-            to_id = payload.get("to") or payload.get("to_id") or payload.get("toId") or "-"
+            from_id = packet_field(payload, "from", "from_id", "fromId") or "-"
+            to_id = packet_field(payload, "to", "to_id", "toId") or "-"
             channel = infer_channel(msg.topic) or "-"
             print(
                 f"Packet id={packet_id} type={packet_type} from={from_id} "
                 f"to={to_id} channel={channel} topic={msg.topic}"
+            )
+        if settings.log_decoded:
+            packet_id = packet_field(payload, "id")
+            print(f"Decoded packet topic='{msg.topic}' id={packet_id}")
+            print(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False))
+        elif settings.verbose_mqtt and client._meshviewlite_rx_count % 100 == 0:  # type: ignore[attr-defined]
+            print(
+                f"RX summary total_rx={client._meshviewlite_rx_count} "  # type: ignore[attr-defined]
+                f"decode_fail={client._meshviewlite_decode_fail_count}"  # type: ignore[attr-defined]
             )
         conn.commit()
     except Exception as exc:
@@ -796,6 +962,7 @@ def on_message(client: mqtt.Client, _userdata: Any, msg: mqtt.MQTTMessage) -> No
 
 
 def main() -> int:
+    """Program entrypoint."""
     settings = parse_args()
     conn = sqlite3.connect(str(settings.db_path))
     init_db(conn)
@@ -807,7 +974,12 @@ def main() -> int:
     client._meshviewlite_next_purge_at = next_daily_purge_epoch(  # type: ignore[attr-defined]
         int(time.time()), settings.purge_hour_utc
     )
+    client._meshviewlite_rx_count = 0  # type: ignore[attr-defined]
+    client._meshviewlite_decode_fail_count = 0  # type: ignore[attr-defined]
     client.on_connect = on_connect
+    client.on_subscribe = on_subscribe
+    client.on_disconnect = on_disconnect
+    client.on_log = on_log
     client.on_message = on_message
 
     if settings.username is not None or settings.password is not None:
