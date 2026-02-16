@@ -52,7 +52,7 @@ async function loadNodes() {
   const q = (query || "").trim().toLowerCase();
 
   try {
-    const res = await fetch("/api/nodes");
+    const res = await fetch(window.buildApiUrl("/api/nodes"));
     if (!res.ok) {
       tbody.innerHTML = `<tr><td colspan="7" class="muted">Failed to load nodes (${res.status})</td></tr>`;
       return;

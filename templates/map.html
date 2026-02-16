@@ -74,7 +74,7 @@ function formatLocalTime(us) {
 
 async function loadNodesOnMap() {
   try {
-    const res = await fetch("/api/nodes");
+    const res = await fetch(window.buildApiUrl("/api/nodes"));
     if (!res.ok) return;
     const data = await res.json();
     const nodes = data.nodes || [];
