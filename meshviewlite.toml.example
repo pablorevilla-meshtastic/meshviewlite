@@ -1,0 +1,19 @@
+[mqtt]
+broker = "mqtt.bayme.sh"
+port = 1883
+topic = "msh/US/bayarea/#"
+db = "meshviewlite.db"
+username = "meshdev"
+password = "large4cats"
+client_id = "meshviewlite"
+keepalive = 60
+retention_days = 14
+purge_hour_utc = 3
+tls = false
+insecure_tls = false
+payload_format = "json" # json | meshtastic | auto
+
+[meshtastic]
+primary_key_b64 = "1PG7OiApB1nwvP+rz05pAQ=="
+secondary_key_b64 = ["base64Key1==", "base64Key2=="]
+skip_node_ids = ["0x1234", "5678"]

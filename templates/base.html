@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }}</title>
+  <style>
+:root {
+  --bg: #0f1419;
+  --panel: #1a222b;
+  --line: #2d3a47;
+  --text: #d6e2ee;
+  --muted: #91a5b8;
+  --accent: #4db6ff;
+  --accent-2: #8ce99a;
+  --warn: #ffd166;
+}
+body {
+  margin: 0;
+  font-family: "Segoe UI", Roboto, sans-serif;
+  background: radial-gradient(circle at top, #15202b, var(--bg));
+  color: var(--text);
+}
+.wrap { max-width: 1120px; margin: 0 auto; padding: 18px; }
+.menu {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.menu-spacer { margin-left: auto; }
+.menu a {
+  color: var(--text);
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #121920;
+  text-decoration: none;
+}
+.menu a:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-bottom: 14px; }
+.muted { color: var(--muted); }
+.warn { color: var(--warn); }
+.grid { display: grid; grid-template-columns: repeat(4, minmax(160px, 1fr)); gap: 10px; }
+.cell { background: #121920; border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+.cell strong { color: var(--accent); }
+table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+th, td { border: 1px solid var(--line); padding: 8px; text-align: left; vertical-align: top; }
+th { background: #121920; }
+tr:nth-child(even) td { background: #121920; }
+.pill { display: inline-block; padding: 2px 7px; border-radius: 999px; background: #22303d; color: var(--accent-2); font-size: 0.8rem; }
+.map { width: 100%; height: 320px; border-radius: 8px; border: 1px solid var(--line); }
+.btn { padding: 4px 7px; border-radius: 6px; border: 1px solid #2d3a47; background: #22303d; color: #d6e2ee; cursor: pointer; }
+@media (max-width: 900px) { .grid { grid-template-columns: repeat(2, minmax(130px, 1fr)); } }
+@media (max-width: 560px) { .grid { grid-template-columns: 1fr; } .menu { flex-wrap: wrap; } }
+  </style>
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <div class="wrap">
+    <div class="menu">
+      <a href="/">Node List</a>
+      <a href="/map">Map</a>
+      <span class="menu-spacer"></span>
+      <a href="/about" title="About">?</a>
+    </div>
+    {% block body %}{% endblock %}
+  </div>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

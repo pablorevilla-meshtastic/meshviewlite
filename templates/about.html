@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+
+{% block body %}
+<div class="panel">
+  <h2 style="margin-top:0;">About MeshviewLite</h2>
+  <p class="muted" style="margin-top:6px;">
+    Lightweight Meshtastic MQTT collector + web viewer.
+  </p>
+</div>
+
+<div class="panel">
+  <h3 style="margin-top:0;">What It Does</h3>
+  <ul>
+    <li>Collects MQTT packets and stores them in SQLite.</li>
+    <li>Maintains latest node state from <code>nodeinfo</code>, <code>telemetry</code>, and <code>position</code> packets.</li>
+    <li>Provides a web UI for node list, node detail, and map views.</li>
+  </ul>
+</div>
+
+<div class="panel">
+  <h3 style="margin-top:0;">API Endpoints</h3>
+  <ul>
+    <li><code>/api/nodes</code></li>
+    <li><code>/api/packets</code></li>
+  </ul>
+</div>
+
+{% endblock %}

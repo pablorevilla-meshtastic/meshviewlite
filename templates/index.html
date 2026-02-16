@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+
+{% block body %}
+{% include "search_form.html" %}
+<div class="panel">
+  <table>
+    <thead>
+      <tr><th>Node</th><th>Short Name</th><th>Long Name</th><th>Model</th><th>Role</th><th>Channel</th><th>Last Seen</th></tr>
+    </thead>
+    <tbody id="node_list">
+      <tr><td colspan="7" class="muted">Loading nodes...</td></tr>
+    </tbody>
+  </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function escapeHtml(text) {
+  return String(text ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function formatLocalTime(us) {
+  if (!us) return "-";
+  const epochMs = Number(us) / 1000;
+  if (!Number.isFinite(epochMs)) return "-";
+  return new Date(epochMs).toLocaleString();
+}
+
+function nodeMatchesQuery(node, q) {
+  if (!q) return true;
+  const hay = [
+    node.node_id,
+    node.id,
+    node.long_name,
+    node.short_name,
+    node.hw_model,
+    node.role,
+    node.channel
+  ]
+    .map((v) => String(v ?? "").toLowerCase())
+    .join(" ");
+  return hay.includes(q);
+}
+
+async function loadNodes() {
+  const tbody = document.getElementById("node_list");
+  const query = new URLSearchParams(window.location.search).get("q");
+  const q = (query || "").trim().toLowerCase();
+
+  try {
+    const res = await fetch("/api/nodes");
+    if (!res.ok) {
+      tbody.innerHTML = `<tr><td colspan="7" class="muted">Failed to load nodes (${res.status})</td></tr>`;
+      return;
+    }
+    const data = await res.json();
+    const nodes = (data.nodes || []).filter((n) => nodeMatchesQuery(n, q));
+
+    if (!nodes.length) {
+      tbody.innerHTML = `<tr><td colspan="7" class="muted">No nodes found.</td></tr>`;
+      return;
+    }
+
+    nodes.sort((a, b) => (b.last_seen_us || 0) - (a.last_seen_us || 0));
+
+    tbody.innerHTML = nodes.map((n) => {
+      const nodeId = n.node_id ?? "";
+      return `
+        <tr>
+          <td><a href="/node/${encodeURIComponent(nodeId)}">${escapeHtml(nodeId)}</a></td>
+          <td>${escapeHtml(n.short_name || "-")}</td>
+          <td>${escapeHtml(n.long_name || "-")}</td>
+          <td>${escapeHtml(n.hw_model || "-")}</td>
+          <td>${escapeHtml(n.role || "-")}</td>
+          <td>${escapeHtml(n.channel || "-")}</td>
+          <td>${escapeHtml(formatLocalTime(n.last_seen_us))}</td>
+        </tr>
+      `;
+    }).join("");
+  } catch (err) {
+    console.error("Failed to load nodes", err);
+    tbody.innerHTML = `<tr><td colspan="6" class="muted">Failed to load nodes</td></tr>`;
+  }
+}
+
+document.addEventListener("DOMContentLoaded", loadNodes);
+</script>
+{% endblock %}

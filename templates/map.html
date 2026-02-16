@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+
+{% block head %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<style>
+#nodes-map {
+  width: 100%;
+  height: 75vh;
+  min-height: 420px;
+  border-radius: 8px;
+  border: 1px solid #2d3a47;
+}
+.node-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #ef4444;
+  border: 1px solid #ffffff;
+  box-sizing: border-box;
+}
+.marker-cluster div {
+  color: #000000;
+  font-weight: 700;
+}
+</style>
+{% endblock %}
+
+{% block body %}
+<div class="panel">
+  <h3 style="margin-top:0;">Nodes Map</h3>
+  <div id="nodes-map"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const map = L.map("nodes-map").setView([37.7749, -122.4194], 7);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19,
+  attribution: "&copy; OpenStreetMap contributors"
+}).addTo(map);
+
+const cluster = L.markerClusterGroup({
+  showCoverageOnHover: false,
+  maxClusterRadius: 45
+});
+
+function makeNodeIcon() {
+  return L.divIcon({
+    className: "",
+    html: `<div class="node-dot"></div>`,
+    iconSize: [14, 14],
+    iconAnchor: [7, 7]
+  });
+}
+
+function escapeHtml(text) {
+  return String(text ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function formatLocalTime(us) {
+  if (!us) return "-";
+  const ms = Number(us) / 1000;
+  if (!Number.isFinite(ms)) return "-";
+  return new Date(ms).toLocaleString();
+}
+
+async function loadNodesOnMap() {
+  try {
+    const res = await fetch("/api/nodes");
+    if (!res.ok) return;
+    const data = await res.json();
+    const nodes = data.nodes || [];
+
+    const markers = [];
+    nodes.forEach((n) => {
+      if (n.last_lat === null || n.last_lat === undefined) return;
+      if (n.last_long === null || n.last_long === undefined) return;
+
+      const lat = Number(n.last_lat) / 1e7;
+      const lon = Number(n.last_long) / 1e7;
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+
+      const label = n.long_name || n.short_name || String(n.node_id);
+      const marker = L.marker([lat, lon], { icon: makeNodeIcon() });
+
+      const popupHtml =
+        `<div style="font-size:0.9em;line-height:1.45">` +
+        `<a href="/node/${encodeURIComponent(n.node_id)}"><b>${escapeHtml(label)}</b></a><br>` +
+        `<b>Node ID:</b> ${escapeHtml(String(n.node_id ?? "-"))}<br>` +
+        `<b>Hex ID:</b> ${escapeHtml(String(n.id ?? "-"))}<br>` +
+        `<b>Short:</b> ${escapeHtml(String(n.short_name ?? "-"))}<br>` +
+        `<b>Long:</b> ${escapeHtml(String(n.long_name ?? "-"))}<br>` +
+        `<b>HW Model:</b> ${escapeHtml(String(n.hw_model ?? "-"))}<br>` +
+        `<b>Role:</b> ${escapeHtml(String(n.role ?? "-"))}<br>` +
+        `<b>Channel:</b> ${escapeHtml(String(n.channel ?? "-"))}<br>` +
+        `<b>Latitude:</b> ${lat.toFixed(6)}<br>` +
+        `<b>Longitude:</b> ${lon.toFixed(6)}<br>` +
+        `<b>Last Seen:</b> ${escapeHtml(formatLocalTime(n.last_seen_us))}` +
+        `</div>`;
+
+      marker.bindPopup(
+        popupHtml
+      );
+      cluster.addLayer(marker);
+      markers.push(marker);
+    });
+
+    map.addLayer(cluster);
+    if (markers.length) {
+      map.fitBounds(cluster.getBounds(), { padding: [20, 20], maxZoom: 12 });
+    }
+  } catch (err) {
+    console.error("Failed to load nodes map", err);
+  }
+}
+
+document.addEventListener("DOMContentLoaded", loadNodesOnMap);
+</script>
+{% endblock %}

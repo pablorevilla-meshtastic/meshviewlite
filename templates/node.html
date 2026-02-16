@@ -1,0 +1,300 @@
+{% extends "base.html" %}
+
+{% block head %}
+<style>
+.node-info {
+  color: #ddd;
+  font-size: 0.88rem;
+  margin-bottom: 14px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(120px, 1fr));
+  grid-column-gap: 12px;
+  grid-row-gap: 12px;
+}
+.node-info-col {
+  background-color: #1f2226;
+  border: 1px solid #3a3f44;
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.node-info-col div { padding: 2px 0; }
+.node-info strong {
+  color: #9fd4ff;
+  font-weight: 600;
+}
+.packet-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  color: #e4e9ee;
+}
+.packet-table th, .packet-table td {
+  border: 1px solid #3a3f44;
+  padding: 6px 10px;
+  text-align: left;
+}
+.packet-table th {
+  background-color: #1f2226;
+  font-weight: bold;
+}
+.packet-table tr:nth-of-type(odd) { background-color: #272b2f; }
+.packet-table tr:nth-of-type(even) { background-color: #212529; }
+.port-tag {
+  padding: 2px 6px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  color: #fff;
+}
+.payload-row { display: none; background-color: #1b1e22; }
+.payload-cell {
+  padding: 8px 12px;
+  font-family: monospace;
+  white-space: pre-wrap;
+  color: #b0bec5;
+}
+.packet-table tr.expanded + .payload-row { display: table-row; }
+.toggle-btn { cursor: pointer; color: #aaa; margin-right: 6px; }
+.toggle-btn:hover { color: #fff; }
+@media (max-width: 900px) {
+  .node-info { grid-template-columns: 1fr; }
+}
+</style>
+{% if show_map %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+{% endif %}
+<script src="/static/portmaps.js"></script>
+{% endblock %}
+
+{% block body %}
+<div class="panel">
+  <h2 style="margin-top:0;">Specifications: <span id="nodeLabel">{{ node.display_name }}</span></h2>
+  <div class="node-info" id="node-info">
+    <div class="node-info-col">
+      <div><strong>Node ID:</strong> <span id="info-node-id">{{ node.id }}</span></div>
+      <div><strong>Hex ID:</strong> <span id="info-id">-</span></div>
+      <div><strong>Short Name:</strong> <span id="info-short-name">{{ node.shortname or "-" }}</span></div>
+      <div><strong>Long Name:</strong> <span id="info-long-name">{{ node.display_name }}</span></div>
+      <div><strong>Channel:</strong> <span id="info-channel">{{ node.channel or "-" }}</span></div>
+    </div>
+    <div class="node-info-col">
+      <div><strong>Latitude:</strong> <span id="info-lat">{{ node.lat_display }}</span></div>
+      <div><strong>Longitude:</strong> <span id="info-lon">{{ node.lon_display }}</span></div>
+      <div><strong>Role:</strong> <span id="info-role">{{ node.role or "-" }}</span></div>
+      <div><strong>Hardware Model:</strong> <span id="info-hw-model">{{ node.hw_model or "-" }}</span></div>
+    </div>
+    <div class="node-info-col">
+      <div><strong>First Update:</strong> <span id="info-first-update">-</span></div>
+      <div><strong>Last Update:</strong> <span id="info-last-update">{{ node.last_seen_fmt }}</span></div>
+    </div>
+  </div>
+</div>
+<div class="panel">
+  <h3 style="margin-top:0;">Location</h3>
+  {% if show_map %}
+  <div id="map" class="map"></div>
+  {% else %}
+  <div class="warn">No known coordinates for this node yet.</div>
+  {% endif %}
+</div>
+<div class="panel">
+  <h3 style="margin-top:0;">Recent Packets</h3>
+  <table class="packet-table">
+    <thead>
+      <tr><th>Time</th><th>Packet ID</th><th>From</th><th>To</th><th>Port</th><th>Channel</th></tr>
+    </thead>
+    <tbody id="packet_list">
+      <tr><td colspan="6" class="muted">Loading packets...</td></tr>
+    </tbody>
+  </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const PORT_COLOR_MAP = window.PORT_COLOR_MAP || {};
+const PORT_LABEL_MAP = window.PORT_LABEL_MAP || {};
+
+function formatLastSeen(us) {
+  if (!us) return "-";
+  const d = new Date(us / 1000);
+  return d.toLocaleString([], {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+}
+
+async function loadNodeSpecification() {
+  const parts = window.location.pathname.split("/");
+  const raw = parts[parts.length - 1];
+  const nodeId = parseInt(raw, 10);
+  if (!Number.isInteger(nodeId)) return;
+
+  try {
+    const res = await fetch(`/api/nodes?node_id=${encodeURIComponent(nodeId)}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const node = (data.nodes || [])[0];
+    if (!node) return;
+
+    const displayName = node.long_name || node.short_name || node.node_id;
+    document.getElementById("nodeLabel").textContent = displayName ?? "-";
+    document.getElementById("info-node-id").textContent = node.node_id ?? "-";
+    document.getElementById("info-id").textContent = node.id ?? "-";
+    document.getElementById("info-short-name").textContent = node.short_name ?? "-";
+    document.getElementById("info-long-name").textContent = node.long_name ?? "-";
+    document.getElementById("info-channel").textContent = node.channel ?? "-";
+    document.getElementById("info-role").textContent = node.role ?? "-";
+    document.getElementById("info-hw-model").textContent = node.hw_model ?? "-";
+    document.getElementById("info-first-update").textContent = formatLastSeen(node.first_seen_us);
+    document.getElementById("info-last-update").textContent = formatLastSeen(node.last_seen_us);
+
+    document.getElementById("info-lat").textContent =
+      node.last_lat !== null && node.last_lat !== undefined ? (node.last_lat / 1e7).toFixed(6) : "-";
+    document.getElementById("info-lon").textContent =
+      node.last_long !== null && node.last_long !== undefined ? (node.last_long / 1e7).toFixed(6) : "-";
+  } catch (err) {
+    console.error("Failed to load node specification:", err);
+  }
+}
+
+function formatLocalTime(us){
+  if (!us) return "-";
+  return new Date(us / 1000).toLocaleString([], {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+}
+
+function portLabel(portnum) {
+  const color = PORT_COLOR_MAP[portnum] || "#6c757d";
+  const label = PORT_LABEL_MAP[portnum] || `Port ${portnum ?? "-"}`;
+  return `<span class="port-tag" style="background-color:${color}">${label}</span> <span class="muted">(${portnum ?? "-"})</span>`;
+}
+
+const nodeNameCache = {};
+
+async function fetchNodeName(nodeId) {
+  if (!Number.isInteger(nodeId)) return null;
+  if (Object.prototype.hasOwnProperty.call(nodeNameCache, nodeId)) {
+    return nodeNameCache[nodeId];
+  }
+  try {
+    const res = await fetch(`/api/nodes?node_id=${encodeURIComponent(nodeId)}`);
+    if (!res.ok) {
+      nodeNameCache[nodeId] = null;
+      return null;
+    }
+    const data = await res.json();
+    const node = (data.nodes || [])[0];
+    const label = node ? (node.long_name || node.short_name || String(nodeId)) : null;
+    nodeNameCache[nodeId] = label;
+    return label;
+  } catch (err) {
+    nodeNameCache[nodeId] = null;
+    return null;
+  }
+}
+
+function nodeLink(id) {
+  if (id === null || id === undefined || id === "") return "-";
+  if (id === 4294967295) return "All";
+  const text = String(id);
+  const asInt = Number.parseInt(text, 10);
+  const label = Number.isInteger(asInt) ? (nodeNameCache[asInt] || text) : text;
+  return /^\d+$/.test(text) ? `<a href="/node/${text}">${escapeHtml(label)}</a>` : escapeHtml(label);
+}
+
+function escapeHtml(text) {
+  return String(text ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+async function loadPackets() {
+  const list = document.getElementById("packet_list");
+  list.innerHTML = "";
+
+  const nodeId = {{ node.node_id_int if node.node_id_int is not none else "null" }};
+  if (!Number.isInteger(nodeId)) {
+    list.innerHTML = `<tr><td colspan="6" class="muted">Invalid node id</td></tr>`;
+    return;
+  }
+
+  const url = new URL("/api/packets", window.location.origin);
+  url.searchParams.set("node_id", String(nodeId));
+  url.searchParams.set("limit", "1000");
+
+  try {
+    const res = await fetch(url.toString());
+    if (!res.ok) {
+      list.innerHTML = `<tr><td colspan="6" class="muted">Failed to load packets (${res.status})</td></tr>`;
+      return;
+    }
+    const data = await res.json();
+    const packets = data.packets || [];
+    if (!packets.length) {
+      list.innerHTML = `<tr><td colspan="6" class="muted">No packets found for this node.</td></tr>`;
+      return;
+    }
+
+    const ids = new Set();
+    packets.forEach((pkt) => {
+      const fromId = Number.parseInt(String(pkt.from_node_id ?? ""), 10);
+      const toId = Number.parseInt(String(pkt.to_node_id ?? ""), 10);
+      if (Number.isInteger(fromId) && fromId !== 4294967295) ids.add(fromId);
+      if (Number.isInteger(toId) && toId !== 4294967295) ids.add(toId);
+    });
+    await Promise.all(Array.from(ids).map((id) => fetchNodeName(id)));
+
+    packets.forEach((pkt) => {
+      const safePayload = escapeHtml(pkt.payload || "");
+      const pid = pkt.packet_id ?? "";
+      const rowKey = pkt.packet_id ?? "";
+      list.insertAdjacentHTML("beforeend", `
+        <tr class="packet-row">
+          <td>${formatLocalTime(pkt.import_time_us)}</td>
+          <td><span class="toggle-btn">▶</span>${pid}</td>
+          <td>${nodeLink(pkt.from_node_id)}</td>
+          <td>${nodeLink(pkt.to_node_id)}</td>
+          <td>${portLabel(pkt.portnum)}</td>
+          <td>${escapeHtml(pkt.channel || "-")}</td>
+        </tr>
+        <tr class="payload-row">
+          <td colspan="6" class="payload-cell" data-row-key="${rowKey}">${safePayload}</td>
+        </tr>
+      `);
+    });
+  } catch (err) {
+    console.error("Failed to load packets:", err);
+    list.innerHTML = `<tr><td colspan="6" class="muted">Failed to load packets</td></tr>`;
+  }
+}
+
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest(".toggle-btn");
+  if (!btn) return;
+  const row = btn.closest(".packet-row");
+  row.classList.toggle("expanded");
+  btn.textContent = row.classList.contains("expanded") ? "▼" : "▶";
+});
+
+document.addEventListener("DOMContentLoaded", loadNodeSpecification);
+document.addEventListener("DOMContentLoaded", loadPackets);
+</script>
+{% if show_map %}
+<script>
+const map = L.map('map').setView([{{ node.lat_deg }}, {{ node.lon_deg }}], 12);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19,
+  attribution: '&copy; OpenStreetMap contributors'
+}).addTo(map);
+L.marker([{{ node.lat_deg }}, {{ node.lon_deg }}]).addTo(map).bindPopup('{{ node.id }}').openPopup();
+</script>
+{% endif %}
+{% endblock %}
