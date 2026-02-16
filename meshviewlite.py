@@ -84,6 +84,7 @@ class Settings:
     skip_node_ids: set[int]
     retention_days: int
     purge_hour_utc: int
+    log_packets: bool
 
 
 def _strip_quotes(value: str) -> str:
@@ -289,6 +290,12 @@ def parse_args() -> Settings:
         or PURGE_HOUR_UTC,
         help=f"UTC hour (0-23) for daily purge (default: {PURGE_HOUR_UTC})",
     )
+    parser.add_argument(
+        "--log-packets",
+        action=argparse.BooleanOptionalAction,
+        default=bool(_cfg_value(config, "log_packets", section="mqtt", aliases=("log-packets",)) or False),
+        help="Log one line per received packet to console",
+    )
 
     args = parser.parse_args()
     if not args.broker:
@@ -323,6 +330,7 @@ def parse_args() -> Settings:
         skip_node_ids=skip_node_ids,
         retention_days=args.retention_days,
         purge_hour_utc=args.purge_hour_utc,
+        log_packets=args.log_packets,
     )
 
 
@@ -771,6 +779,16 @@ def on_message(client: mqtt.Client, _userdata: Any, msg: mqtt.MQTTMessage) -> No
             )
         store_packet(conn, msg.topic, payload)
         upsert_node(conn, msg.topic, payload)
+        if settings.log_packets:
+            packet_id = payload.get("id")
+            packet_type = infer_packet_type(payload) or "-"
+            from_id = payload.get("from") or payload.get("from_id") or payload.get("fromId") or "-"
+            to_id = payload.get("to") or payload.get("to_id") or payload.get("toId") or "-"
+            channel = infer_channel(msg.topic) or "-"
+            print(
+                f"Packet id={packet_id} type={packet_type} from={from_id} "
+                f"to={to_id} channel={channel} topic={msg.topic}"
+            )
         conn.commit()
     except Exception as exc:
         conn.rollback()

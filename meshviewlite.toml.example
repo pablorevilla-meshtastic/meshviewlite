@@ -9,6 +9,7 @@ client_id = "meshviewlite"
 keepalive = 60
 retention_days = 14
 purge_hour_utc = 3
+log_packets = false
 tls = false
 insecure_tls = false
 payload_format = "json" # json | meshtastic | auto
