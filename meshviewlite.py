@@ -499,6 +499,7 @@ def infer_packet_type(payload: dict[str, Any]) -> str | None:
         if isinstance(value, str):
             stripped = value.strip()
             enum_map = {
+                "TEXT_MESSAGE_APP": "Text",
                 "POSITION_APP": "Position",
                 "NODEINFO_APP": "Node Info",
                 "TELEMETRY_APP": "Telemetry",
@@ -541,8 +542,12 @@ def infer_node(payload: dict[str, Any], channel: str | None) -> dict[str, Any] |
     """
     nested_payload = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
     packet_type_raw = payload.get("type")
-    packet_type = str(packet_type_raw).strip().lower().replace("_", "") if packet_type_raw is not None else ""
-    if packet_type not in {"nodeinfo", "telemetry", "position", "location"}:
+    packet_type = (
+        str(packet_type_raw).strip().lower().replace("_", "").replace(" ", "").replace("(", "").replace(")", "")
+        if packet_type_raw is not None
+        else ""
+    )
+    if packet_type not in {"nodeinfo", "telemetry", "position", "location", "text"}:
         return None
 
     def _enum_name(enum_type: Any, value: Any) -> str | None:
@@ -814,6 +819,10 @@ def _decode_meshtastic(
                     msg, preserving_proto_field_name=True
                 )
                 payload["type"] = "telemetry"
+            elif portnum == PortNum.TEXT_MESSAGE_APP:
+                text = packet.decoded.payload.decode("utf-8", errors="replace")
+                app_payload_dict = {"text": text}
+                payload["type"] = "text"
         except DecodeError:
             app_payload_dict = None
 

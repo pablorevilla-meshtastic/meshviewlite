@@ -477,7 +477,8 @@ class MeshViewHandler(BaseHTTPRequestHandler):
                 FROM packets p
                 WHERE p.from_id IS NOT NULL
                   AND p.packet_type IS NOT NULL
-                  AND lower(replace(p.packet_type, '_', '')) IN ('nodeinfo', 'telemetry', 'position', 'location')
+                  AND lower(replace(replace(replace(replace(p.packet_type, '_', ''), ' ', ''), '(', ''), ')', ''))
+                      IN ('nodeinfo', 'telemetry', 'position', 'location', 'text')
                 GROUP BY p.from_id
                 ORDER BY last_seen DESC
                 """
@@ -499,12 +500,14 @@ class MeshViewHandler(BaseHTTPRequestHandler):
                     FROM packets
                     WHERE from_id IS NOT NULL
                       AND packet_type IS NOT NULL
-                      AND lower(replace(packet_type, '_', '')) IN ('nodeinfo', 'telemetry', 'position', 'location')
+                      AND lower(replace(replace(replace(replace(packet_type, '_', ''), ' ', ''), '(', ''), ')', ''))
+                          IN ('nodeinfo', 'telemetry', 'position', 'location', 'text')
                     GROUP BY from_id
                 ) t ON t.from_id = p.from_id AND t.max_seen = p.received_at
                 WHERE p.from_id IS NOT NULL
                   AND p.packet_type IS NOT NULL
-                  AND lower(replace(p.packet_type, '_', '')) IN ('nodeinfo', 'telemetry', 'position', 'location')
+                  AND lower(replace(replace(replace(replace(p.packet_type, '_', ''), ' ', ''), '(', ''), ')', ''))
+                      IN ('nodeinfo', 'telemetry', 'position', 'location', 'text')
                 """
             ).fetchall()
             latest_payload_by_from: dict[str, str] = {}
