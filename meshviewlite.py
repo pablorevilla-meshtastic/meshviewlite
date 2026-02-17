@@ -43,6 +43,7 @@ import paho.mqtt.client as mqtt
 
 PACKET_RETENTION_DAYS = 14
 PURGE_HOUR_UTC = 3
+NODE_HEX_RE = re.compile(r"![0-9a-fA-F]{8}")
 
 
 # Port number -> human label map used when packet_type needs inference.
@@ -97,6 +98,7 @@ class Settings:
     insecure_tls: bool
     payload_format: str
     primary_key: bytes | None
+    keyring: tuple[bytes, ...]
     skip_node_ids: set[int]
     retention_days: int
     purge_hour_utc: int
@@ -350,6 +352,7 @@ def parse_args() -> Settings:
         insecure_tls=args.insecure_tls,
         payload_format=args.payload_format,
         primary_key=primary_key,
+        keyring=((primary_key,) if primary_key is not None else ()),
         skip_node_ids=skip_node_ids,
         retention_days=args.retention_days,
         purge_hour_utc=args.purge_hour_utc,
@@ -361,6 +364,11 @@ def parse_args() -> Settings:
 
 def init_db(conn: sqlite3.Connection) -> None:
     """Create/migrate SQLite tables and indexes used by the collector."""
+    # Faster concurrent reader/writer behavior for collector + web UI.
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA temp_store=MEMORY")
+
     desired_nodes_columns = [
         "id",
         "longname",
@@ -465,9 +473,6 @@ def packet_field(payload: dict[str, Any], *names: str) -> Any:
 
 def infer_channel(topic: str) -> str | None:
     """Infer mesh channel name from MQTT topic structure."""
-    def _is_node_hex(value: str) -> bool:
-        return re.fullmatch(r"![0-9a-fA-F]{8}", value) is not None
-
     parts = [p for p in topic.split("/") if p]
     if not parts:
         return None
@@ -475,18 +480,18 @@ def infer_channel(topic: str) -> str | None:
         idx = parts.index("e")
         if idx + 1 < len(parts):
             candidate = parts[idx + 1]
-            if not _is_node_hex(candidate):
+            if NODE_HEX_RE.fullmatch(candidate) is None:
                 return candidate
 
     # Common JSON topic form:
     # .../json/<channel>/!<sender_hex>
-    if len(parts) >= 2 and _is_node_hex(parts[-1]):
+    if len(parts) >= 2 and NODE_HEX_RE.fullmatch(parts[-1]) is not None:
         candidate = parts[-2]
-        if candidate and not _is_node_hex(candidate):
+        if candidate and NODE_HEX_RE.fullmatch(candidate) is None:
             return candidate
 
     candidate = parts[-1]
-    if _is_node_hex(candidate):
+    if NODE_HEX_RE.fullmatch(candidate) is not None:
         return None
     return candidate
 
@@ -536,7 +541,11 @@ def infer_packet_type(payload: dict[str, Any]) -> str | None:
     return None
 
 
-def infer_node(payload: dict[str, Any], channel: str | None) -> dict[str, Any] | None:
+def infer_node(
+    payload: dict[str, Any],
+    channel: str | None,
+    packet_type_hint: str | None = None,
+) -> dict[str, Any] | None:
     """Extract node update fields from supported packet types.
 
     Supported packet types:
@@ -545,7 +554,7 @@ def infer_node(payload: dict[str, Any], channel: str | None) -> dict[str, Any] |
     - telemetry: only last_seen and raw payload are updated by upsert
     """
     nested_payload = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
-    packet_type_raw = payload.get("type") or infer_packet_type(payload)
+    packet_type_raw = payload.get("type") or packet_type_hint or infer_packet_type(payload)
     packet_type = (
         str(packet_type_raw).strip().lower().replace("_", "").replace(" ", "").replace("(", "").replace(")", "")
         if packet_type_raw is not None
@@ -593,7 +602,7 @@ def infer_node(payload: dict[str, Any], channel: str | None) -> dict[str, Any] |
         stripped = text.strip()
         if not stripped:
             return None
-        if re.fullmatch(r"![0-9a-fA-F]{8}", stripped):
+        if NODE_HEX_RE.fullmatch(stripped):
             return None
         if stripped == "0":
             return None
@@ -650,11 +659,17 @@ def infer_node(payload: dict[str, Any], channel: str | None) -> dict[str, Any] |
     }
 
 
-def store_packet(conn: sqlite3.Connection, topic: str, payload: dict[str, Any]) -> None:
+def store_packet(
+    conn: sqlite3.Connection,
+    topic: str,
+    payload: dict[str, Any],
+    *,
+    now: int,
+    channel: str | None,
+    packet_type: str | None,
+    payload_json: str,
+) -> None:
     """Insert packet row if packet_id is present and not already stored."""
-    now = int(time.time())
-    channel = infer_channel(topic)
-    packet_type = infer_packet_type(payload)
     packet_id_raw = packet_field(payload, "id")
     packet_id: int | None = None
     if isinstance(packet_id_raw, (int, float)):
@@ -685,19 +700,25 @@ def store_packet(conn: sqlite3.Connection, topic: str, payload: dict[str, Any]) 
             to_id,
             channel,
             portnum,
-            json.dumps(payload, separators=(",", ":"), ensure_ascii=True),
+            payload_json,
         ),
     )
 
 
-def upsert_node(conn: sqlite3.Connection, topic: str, payload: dict[str, Any]) -> None:
+def upsert_node(
+    conn: sqlite3.Connection,
+    payload: dict[str, Any],
+    *,
+    now: int,
+    channel: str | None,
+    packet_type: str | None,
+    payload_json: str,
+) -> None:
     """Upsert latest node state from payload; preserve known fields when new values are null."""
-    channel = infer_channel(topic)
-    node = infer_node(payload, channel)
+    node = infer_node(payload, channel, packet_type_hint=packet_type)
     if not node:
         return
 
-    now = int(time.time())
     # last_seen should reflect when this collector last received any packet from the node.
     node["last_seen"] = now
     conn.execute(
@@ -727,7 +748,7 @@ def upsert_node(conn: sqlite3.Connection, topic: str, payload: dict[str, Any]) -
             node["last_lat"],
             node["last_lon"],
             node["last_seen"],
-            json.dumps(payload, separators=(",", ":"), ensure_ascii=True),
+            payload_json,
         ),
     )
 
@@ -771,7 +792,7 @@ def _decode_json(payload_bytes: bytes) -> dict[str, Any] | None:
 
 def _decode_meshtastic(
     payload_bytes: bytes,
-    keyring: list[bytes],
+    keyring: tuple[bytes, ...],
     skip_node_ids: set[int],
 ) -> dict[str, Any] | None:
     """Decode Meshtastic ServiceEnvelope payload bytes into dict."""
@@ -847,21 +868,17 @@ def _decode_meshtastic(
 
 def decode_payload(settings: Settings, payload_bytes: bytes) -> dict[str, Any] | None:
     """Decode payload according to selected mode: json, meshtastic, or auto."""
-    keyring = []
-    if settings.primary_key is not None:
-        keyring.append(settings.primary_key)
-
     if settings.payload_format == "json":
         return _decode_json(payload_bytes)
 
     if settings.payload_format == "meshtastic":
-        return _decode_meshtastic(payload_bytes, keyring, settings.skip_node_ids)
+        return _decode_meshtastic(payload_bytes, settings.keyring, settings.skip_node_ids)
 
     payload = _decode_json(payload_bytes)
     if payload is not None:
         return payload
 
-    return _decode_meshtastic(payload_bytes, keyring, settings.skip_node_ids)
+    return _decode_meshtastic(payload_bytes, settings.keyring, settings.skip_node_ids)
 
 
 def purge_old_packets(conn: sqlite3.Connection, now: int, retention_days: int) -> int:
@@ -935,7 +952,7 @@ def on_message(client: mqtt.Client, _userdata: Any, msg: mqtt.MQTTMessage) -> No
     next_purge_at: int = client._meshviewlite_next_purge_at  # type: ignore[attr-defined]
     client._meshviewlite_rx_count += 1  # type: ignore[attr-defined]
 
-    payload = decode_payload(settings, bytes(msg.payload))
+    payload = decode_payload(settings, msg.payload)
     if not payload:
         client._meshviewlite_decode_fail_count += 1  # type: ignore[attr-defined]
         if settings.verbose_mqtt:
@@ -956,17 +973,35 @@ def on_message(client: mqtt.Client, _userdata: Any, msg: mqtt.MQTTMessage) -> No
             client._meshviewlite_next_purge_at = next_daily_purge_epoch(  # type: ignore[attr-defined]
                 now, settings.purge_hour_utc
             )
-        store_packet(conn, msg.topic, payload)
-        upsert_node(conn, msg.topic, payload)
+        channel = infer_channel(msg.topic)
+        packet_type = infer_packet_type(payload)
+        payload_json = json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
+        store_packet(
+            conn,
+            msg.topic,
+            payload,
+            now=now,
+            channel=channel,
+            packet_type=packet_type,
+            payload_json=payload_json,
+        )
+        upsert_node(
+            conn,
+            payload,
+            now=now,
+            channel=channel,
+            packet_type=packet_type,
+            payload_json=payload_json,
+        )
         if settings.log_packets:
             packet_id = packet_field(payload, "id")
-            packet_type = infer_packet_type(payload) or "-"
+            packet_type_label = packet_type or "-"
             from_id = packet_field(payload, "from", "from_id", "fromId") or "-"
             to_id = packet_field(payload, "to", "to_id", "toId") or "-"
-            channel = infer_channel(msg.topic) or "-"
+            channel_label = channel or "-"
             print(
-                f"Packet id={packet_id} type={packet_type} from={from_id} "
-                f"to={to_id} channel={channel} topic={msg.topic}"
+                f"Packet id={packet_id} type={packet_type_label} from={from_id} "
+                f"to={to_id} channel={channel_label} topic={msg.topic}"
             )
         if settings.log_decoded:
             packet_id = packet_field(payload, "id")

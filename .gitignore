@@ -7,3 +7,5 @@ __pycache__/
 *.sqlite3
 *.log
 meshviewlite.toml
+mexico.db-shm
+mexico.db-wal
