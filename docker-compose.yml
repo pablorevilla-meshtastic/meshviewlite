@@ -1,0 +1,28 @@
+services:
+  collector:
+    build: .
+    command: ["collector"]
+    restart: unless-stopped
+    environment:
+      MESHVIEWLITE_CONFIG: /config/meshviewlite.toml
+    volumes:
+      - ./meshviewlite.toml:/config/meshviewlite.toml:ro
+      - meshviewlite_data:/data
+
+  web:
+    build: .
+    command: ["web"]
+    restart: unless-stopped
+    depends_on:
+      - collector
+    environment:
+      MESHVIEWLITE_CONFIG: /config/meshviewlite.toml
+      WEB_PORT: "8050"
+    volumes:
+      - ./meshviewlite.toml:/config/meshviewlite.toml:ro
+      - meshviewlite_data:/data
+    ports:
+      - "8050:8050"
+
+volumes:
+  meshviewlite_data:

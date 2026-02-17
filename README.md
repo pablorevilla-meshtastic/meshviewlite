@@ -45,7 +45,6 @@ payload_format = "json" # json | meshtastic | auto
 
 [meshtastic]
 primary_key_b64 = "1PG7OiApB1nwvP+rz05pAQ=="
-secondary_key_b64 = ["base64Key1==", "base64Key2=="]
 skip_node_ids = ["0x1234", "5678"]
 ```
 
@@ -90,7 +89,6 @@ Meshtastic protobuf payloads (with decryption keys):
   --password pass \
   --payload-format meshtastic \
   --primary-key-b64 '1PG7OiApB1nwvP+rz05pAQ==' \
-  --secondary-key-b64 'base64Key1==,base64Key2==' \
   --skip-node-id 0x1234 \
   --skip-node-id 5678
 ```
@@ -151,4 +149,38 @@ Supported query params for `/api/packets`:
 - `from_node_id`: packets where `from_id == from_node_id`
 - `portnum`: numeric port filter (also maps common packet type names like telemetry/position/nodeinfo/neighbor)
 - `since`: epoch seconds or microseconds
-- `limit`: max rows (1..5000, default 200)
+- `limit`: max rows (1..50, default 50)
+
+## Docker
+
+1. Copy the example config and set your values:
+
+```bash
+cp meshviewlite.toml.example meshviewlite.toml
+```
+
+For Docker, set DB path to `/data/meshviewlite.db` in `meshviewlite.toml`.
+
+2. Start collector + web UI:
+
+```bash
+docker compose up -d --build
+```
+
+3. Open:
+
+- `http://127.0.0.1:8050/`
+
+4. Stop:
+
+```bash
+docker compose down
+```
+
+## GitHub Actions
+
+This repo includes CI at `.github/workflows/ci.yml`:
+- installs Python deps
+- compiles `meshviewlite.py` and `meshviewlite_web.py`
+- runs CLI help smoke checks
+- builds the Docker image
