@@ -500,6 +500,10 @@ def infer_packet_type(payload: dict[str, Any]) -> str | None:
             stripped = value.strip()
             enum_map = {
                 "TEXT_MESSAGE_APP": "Text",
+                "ROUTING_APP": "Routing",
+                "TRACEROUTE_APP": "Traceroute",
+                "NEIGHBORINFO_APP": "Neighbor",
+                "NEIGHBOR_APP": "Neighbor",
                 "POSITION_APP": "Position",
                 "NODEINFO_APP": "Node Info",
                 "TELEMETRY_APP": "Telemetry",
@@ -547,7 +551,16 @@ def infer_node(payload: dict[str, Any], channel: str | None) -> dict[str, Any] |
         if packet_type_raw is not None
         else ""
     )
-    if packet_type not in {"nodeinfo", "telemetry", "position", "location", "text"}:
+    if packet_type not in {
+        "nodeinfo",
+        "telemetry",
+        "position",
+        "location",
+        "text",
+        "routing",
+        "traceroute",
+        "neighbor",
+    }:
         return None
 
     def _enum_name(enum_type: Any, value: Any) -> str | None:

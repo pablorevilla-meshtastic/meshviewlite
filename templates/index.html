@@ -5,7 +5,7 @@
 <div class="panel">
   <table>
     <thead>
-      <tr><th>Node</th><th>Short Name</th><th>Long Name</th><th>Model</th><th>Role</th><th>Channel</th><th>Last Seen</th></tr>
+      <tr><th>Long Name</th><th>Short Name</th><th>Hex ID</th><th>Model</th><th>Role</th><th>Channel</th><th>Last Seen</th></tr>
     </thead>
     <tbody id="node_list">
       <tr><td colspan="7" class="muted">Loading nodes...</td></tr>
@@ -71,11 +71,12 @@ async function loadNodes() {
 
     tbody.innerHTML = nodes.map((n) => {
       const nodeId = n.node_id ?? "";
+      const longLabel = n.long_name || n.id || String(nodeId);
       return `
         <tr>
-          <td><a href="/node/${encodeURIComponent(nodeId)}">${escapeHtml(nodeId)}</a></td>
+          <td><a href="/node/${encodeURIComponent(nodeId)}">${escapeHtml(longLabel)}</a></td>
           <td>${escapeHtml(n.short_name || "-")}</td>
-          <td>${escapeHtml(n.long_name || "-")}</td>
+          <td>${escapeHtml(n.id || "-")}</td>
           <td>${escapeHtml(n.hw_model || "-")}</td>
           <td>${escapeHtml(n.role || "-")}</td>
           <td>${escapeHtml(n.channel || "-")}</td>

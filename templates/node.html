@@ -294,7 +294,7 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 19,
   attribution: '&copy; OpenStreetMap contributors'
 }).addTo(map);
-L.marker([{{ node.lat_deg }}, {{ node.lon_deg }}]).addTo(map).bindPopup('{{ node.id }}').openPopup();
+L.marker([{{ node.lat_deg }}, {{ node.lon_deg }}]).addTo(map);
 </script>
 {% endif %}
 {% endblock %}
