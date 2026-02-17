@@ -75,18 +75,6 @@ tr:nth-child(even) td { background: #121920; }
     </div>
     {% block body %}{% endblock %}
   </div>
-  <script>
-    window.API_BASE_URL = {{ (api_base_url or "") | tojson }};
-    window.buildApiUrl = function(path) {
-      const cleanPath = String(path || "").startsWith("/") ? String(path) : "/" + String(path || "");
-      const base = String(window.API_BASE_URL || "").trim();
-      if (!base) return cleanPath;
-      if (base.startsWith("http://") || base.startsWith("https://")) {
-        return base.replace(/\/+$/, "") + cleanPath;
-      }
-      return "/" + base.replace(/^\/+|\/+$/g, "") + cleanPath;
-    };
-  </script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

@@ -98,11 +98,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--host", default="127.0.0.1", help="Bind host")
     parser.add_argument("--port", type=int, default=8050, help="Bind port")
-    parser.add_argument(
-        "--api-base-url",
-        default=get_config_value(config, "web", "api_base_url", ""),
-        help="Optional API base URL prefix, e.g. https://example.com or /meshview",
-    )
     return parser.parse_args()
 
 
@@ -311,8 +306,6 @@ class MeshViewHandler(BaseHTTPRequestHandler):
             template = JINJA.get_template(template_name)
         except TemplateNotFound:
             return "<h1>Template not found</h1>"
-        if "api_base_url" not in context:
-            context["api_base_url"] = self.server.api_base_url
         return template.render(**context)
 
     def _send_not_found(self, message: str = "Not found") -> None:
@@ -799,10 +792,9 @@ class MeshViewHandler(BaseHTTPRequestHandler):
 
 
 class MeshViewServer(ThreadingHTTPServer):
-    def __init__(self, server_address: tuple[str, int], db_path: Path, api_base_url: str = ""):
+    def __init__(self, server_address: tuple[str, int], db_path: Path):
         super().__init__(server_address, MeshViewHandler)
         self.db_path = db_path
-        self.api_base_url = api_base_url.rstrip("/")
 
 
 def main() -> int:
@@ -811,7 +803,7 @@ def main() -> int:
     if not db_path.exists():
         raise SystemExit(f"Database file not found: {db_path}")
 
-    server = MeshViewServer((args.host, args.port), db_path, api_base_url=args.api_base_url or "")
+    server = MeshViewServer((args.host, args.port), db_path)
     print(f"Serving meshviewlite UI at http://{args.host}:{args.port}/ (db: {db_path})")
     try:
         server.serve_forever()
