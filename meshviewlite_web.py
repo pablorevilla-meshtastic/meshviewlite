@@ -104,6 +104,16 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def app_title_from_db_path(db_path: Path) -> str:
+    stem = db_path.stem.strip()
+    if not stem:
+        return "Meshview Lite"
+    clean = re.sub(r"[_\-]+", " ", stem)
+    words = [w.capitalize() for w in clean.split() if w]
+    prefix = " ".join(words) if words else "Meshview"
+    return f"{prefix} Meshview Lite"
+
+
 def format_ts(epoch: int | None) -> str:
     if epoch is None:
         return "-"
@@ -309,10 +319,12 @@ class MeshViewHandler(BaseHTTPRequestHandler):
             template = JINJA.get_template(template_name)
         except TemplateNotFound:
             return "<h1>Template not found</h1>"
+        context.setdefault("title", self.server.app_title)
+        context.setdefault("app_title", self.server.app_title)
         return template.render(**context)
 
     def _send_not_found(self, message: str = "Not found") -> None:
-        body = self._render_template("not_found.html", title="Not Found", message=message)
+        body = self._render_template("not_found.html", message=message)
         self._send_html(404, body)
 
     def _send_bytes(self, status: int, content_type: str, payload: bytes) -> None:
@@ -446,23 +458,23 @@ class MeshViewHandler(BaseHTTPRequestHandler):
                 }
             )
 
-        body = self._render_template("index.html", title="meshviewlite nodes", q=q, nodes=rows)
+        body = self._render_template("index.html", q=q, nodes=rows)
         self._send_html(200, body)
 
     def _handle_map(self) -> None:
-        body = self._render_template("map.html", title="meshviewlite map")
+        body = self._render_template("map.html")
         self._send_html(200, body)
 
     def _handle_packets_page(self) -> None:
-        body = self._render_template("packets.html", title="meshviewlite packets")
+        body = self._render_template("packets.html")
         self._send_html(200, body)
 
     def _handle_chat(self) -> None:
-        body = self._render_template("chat.html", title="meshviewlite chat")
+        body = self._render_template("chat.html")
         self._send_html(200, body)
 
     def _handle_about(self) -> None:
-        body = self._render_template("about.html", title="About meshviewlite")
+        body = self._render_template("about.html")
         self._send_html(200, body)
 
     def _handle_api_nodes(self) -> None:
@@ -804,7 +816,6 @@ class MeshViewHandler(BaseHTTPRequestHandler):
 
         body = self._render_template(
             "node.html",
-            title=f"Node {node_id_text}",
             node=node_data,
             show_map=show_map,
             packets=packet_rows,
@@ -816,6 +827,7 @@ class MeshViewServer(ThreadingHTTPServer):
     def __init__(self, server_address: tuple[str, int], db_path: Path):
         super().__init__(server_address, MeshViewHandler)
         self.db_path = db_path
+        self.app_title = app_title_from_db_path(db_path)
 
 
 def main() -> int:
@@ -825,7 +837,9 @@ def main() -> int:
         raise SystemExit(f"Database file not found: {db_path}")
 
     server = MeshViewServer((args.host, args.port), db_path)
-    print(f"Serving meshviewlite UI at http://{args.host}:{args.port}/ (db: {db_path})")
+    print(
+        f"Serving {server.app_title} at http://{args.host}:{args.port}/ (db: {db_path})"
+    )
     try:
         server.serve_forever()
     except KeyboardInterrupt:
