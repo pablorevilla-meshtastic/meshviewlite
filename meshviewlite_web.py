@@ -382,7 +382,7 @@ class MeshViewHandler(BaseHTTPRequestHandler):
         if parsed.path in ("/api/nodes", "/api/node"):
             self._handle_api_nodes()
             return
-        if parsed.path == "/api/version":
+        if parsed.path in ("/api/version", "/version"):
             self._send_json(200, {"version": APP_VERSION})
             return
         if parsed.path == "/api/packets":
