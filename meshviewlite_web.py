@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
+APP_VERSION = "lite 1.0.0"
+
 
 PORTNUM_NAMES: dict[int, str] = {
     0: "Unknown",
@@ -379,6 +381,9 @@ class MeshViewHandler(BaseHTTPRequestHandler):
             return
         if parsed.path in ("/api/nodes", "/api/node"):
             self._handle_api_nodes()
+            return
+        if parsed.path == "/api/version":
+            self._send_json(200, {"version": APP_VERSION})
             return
         if parsed.path == "/api/packets":
             self._handle_api_packets(parsed)
