@@ -108,6 +108,13 @@
     <canvas id="packets_week_chart"></canvas>
   </div>
 </div>
+<div class="panel" id="telemetry_panel">
+  <h3 style="margin-top:0;">Battery & Voltage</h3>
+  <div class="chart-wrap">
+    <canvas id="telemetry_chart"></canvas>
+  </div>
+  <div id="telemetry_empty" class="muted" style="display:none;">No telemetry packets found for this node.</div>
+</div>
 <div class="panel">
   <h3 style="margin-top:0;">Recent Packets</h3>
   <table class="packet-table">
@@ -210,6 +217,128 @@ function dayKeyFromDate(d) {
 }
 
 let weekChart = null;
+let telemetryChart = null;
+
+function parseTelemetryPayload(payloadText) {
+  if (!payloadText) return { battery: null, voltage: null };
+  const batteryMatch = String(payloadText).match(/battery_level:\s*(-?\d+(?:\.\d+)?)/i);
+  const voltageMatch = String(payloadText).match(/voltage:\s*(-?\d+(?:\.\d+)?)/i);
+  return {
+    battery: batteryMatch ? Number.parseFloat(batteryMatch[1]) : null,
+    voltage: voltageMatch ? Number.parseFloat(voltageMatch[1]) : null
+  };
+}
+
+function renderTelemetryChart(packets) {
+  const panel = document.getElementById("telemetry_panel");
+  const empty = document.getElementById("telemetry_empty");
+  const canvas = document.getElementById("telemetry_chart");
+  if (!panel || !empty || !canvas || typeof Chart === "undefined") return;
+
+  const points = [];
+  packets.slice().reverse().forEach((pkt) => {
+    const { battery, voltage } = parseTelemetryPayload(pkt.payload);
+    if ((battery === null || Number.isNaN(battery)) && (voltage === null || Number.isNaN(voltage))) {
+      return;
+    }
+    points.push({
+      t: formatLocalTime(pkt.import_time_us),
+      battery: battery !== null && !Number.isNaN(battery) ? battery : null,
+      voltage: voltage !== null && !Number.isNaN(voltage) ? voltage : null
+    });
+  });
+
+  if (telemetryChart) {
+    telemetryChart.destroy();
+    telemetryChart = null;
+  }
+
+  if (!points.length) {
+    empty.style.display = "block";
+    canvas.style.display = "none";
+    return;
+  }
+
+  empty.style.display = "none";
+  canvas.style.display = "block";
+
+  telemetryChart = new Chart(canvas, {
+    type: "line",
+    data: {
+      labels: points.map((p) => p.t),
+      datasets: [
+        {
+          label: "Battery (%)",
+          data: points.map((p) => p.battery),
+          borderColor: "rgba(255, 214, 82, 1)",
+          backgroundColor: "rgba(255, 214, 82, 0.2)",
+          spanGaps: true,
+          tension: 0.2,
+          yAxisID: "yBattery"
+        },
+        {
+          label: "Voltage (V)",
+          data: points.map((p) => p.voltage),
+          borderColor: "rgba(79, 155, 255, 1)",
+          backgroundColor: "rgba(79, 155, 255, 0.2)",
+          spanGaps: true,
+          tension: 0.2,
+          yAxisID: "yVoltage"
+        }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { labels: { color: "#d6e2ee" } }
+      },
+      scales: {
+        x: {
+          ticks: { color: "#d6e2ee" },
+          grid: { color: "rgba(214,226,238,0.1)" }
+        },
+        yBattery: {
+          type: "linear",
+          position: "left",
+          min: 0,
+          max: 100,
+          ticks: { color: "#d6e2ee" },
+          grid: { color: "rgba(214,226,238,0.1)" }
+        },
+        yVoltage: {
+          type: "linear",
+          position: "right",
+          ticks: { color: "#d6e2ee" },
+          grid: { drawOnChartArea: false }
+        }
+      }
+    }
+  });
+}
+
+async function loadTelemetryChart() {
+  const nodeId = {{ node.node_id_int if node.node_id_int is not none else "null" }};
+  if (!Number.isInteger(nodeId)) return;
+  try {
+    const url = new URL("/api/packets", window.location.origin);
+    url.searchParams.set("from_node_id", String(nodeId));
+    url.searchParams.set("portnum", "67");
+    url.searchParams.set("limit", "50");
+    const res = await fetch(url.toString());
+    if (!res.ok) {
+      renderTelemetryChart([]);
+      return;
+    }
+    const data = await res.json();
+    renderTelemetryChart(data.packets || []);
+  } catch (err) {
+    console.error("Failed to load telemetry packets:", err);
+    renderTelemetryChart([]);
+  }
+}
+
 function renderWeekChart(packets) {
   const canvas = document.getElementById("packets_week_chart");
   if (!canvas || typeof Chart === "undefined") return;
@@ -341,6 +470,7 @@ document.addEventListener("click", (e) => {
 
 document.addEventListener("DOMContentLoaded", loadNodeSpecification);
 document.addEventListener("DOMContentLoaded", loadPackets);
+document.addEventListener("DOMContentLoaded", loadTelemetryChart);
 </script>
 {% if show_map %}
 <script>
