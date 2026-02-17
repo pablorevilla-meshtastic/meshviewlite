@@ -67,7 +67,9 @@ async function loadChat() {
       return;
     }
     const data = await res.json();
-    const packets = (data.packets || []).slice().reverse();
+    const packets = (data.packets || [])
+      .slice()
+      .sort((a, b) => (Number(b.import_time_us) || 0) - (Number(a.import_time_us) || 0));
     if (!packets.length) {
       el.innerHTML = `<div class="muted">No text packets yet.</div>`;
       return;
