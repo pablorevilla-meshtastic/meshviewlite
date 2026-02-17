@@ -1,5 +1,5 @@
 <div class="panel">
-  <form method="get">
+  <form method="get" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
     <input
       name="q"
       value="{{ q }}"
@@ -7,5 +7,7 @@
       style="width:60%;max-width:360px;padding:7px;border-radius:6px;border:1px solid #2d3a47;background:#0f1419;color:#d6e2ee;"
     >
     <button type="submit" class="btn">Search</button>
+    <a href="/" class="btn" style="text-decoration:none;display:inline-flex;align-items:center;">Clear</a>
+    <span id="node_count_badge" class="muted">Nodes: 0</span>
   </form>
 </div>

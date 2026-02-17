@@ -48,6 +48,7 @@ function nodeMatchesQuery(node, q) {
 
 async function loadNodes() {
   const tbody = document.getElementById("node_list");
+  const countBadge = document.getElementById("node_count_badge");
   const query = new URLSearchParams(window.location.search).get("q");
   const q = (query || "").trim().toLowerCase();
 
@@ -59,6 +60,7 @@ async function loadNodes() {
     }
     const data = await res.json();
     const nodes = (data.nodes || []).filter((n) => nodeMatchesQuery(n, q));
+    if (countBadge) countBadge.textContent = `Nodes: ${nodes.length}`;
 
     if (!nodes.length) {
       tbody.innerHTML = `<tr><td colspan="7" class="muted">No nodes found.</td></tr>`;
@@ -83,7 +85,8 @@ async function loadNodes() {
     }).join("");
   } catch (err) {
     console.error("Failed to load nodes", err);
-    tbody.innerHTML = `<tr><td colspan="6" class="muted">Failed to load nodes</td></tr>`;
+    if (countBadge) countBadge.textContent = "Nodes: ?";
+    tbody.innerHTML = `<tr><td colspan="7" class="muted">Failed to load nodes</td></tr>`;
   }
 }
 

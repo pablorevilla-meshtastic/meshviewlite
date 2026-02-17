@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+
+{% block head %}
+<style>
+.chat-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.chat-msg {
+  background: #121920;
+  border: 1px solid #2d3a47;
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+.chat-meta {
+  color: #91a5b8;
+  font-size: 0.8rem;
+  margin-bottom: 6px;
+}
+.chat-text {
+  color: #d6e2ee;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+</style>
+{% endblock %}
+
+{% block body %}
+
+<div class="panel">
+  <div id="chat_list" class="chat-wrap">
+    <div class="muted">Loading chat messages...</div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function escapeHtml(text) {
+  return String(text ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function formatLocalTime(us) {
+  if (!us) return "-";
+  const ms = Number(us) / 1000;
+  if (!Number.isFinite(ms)) return "-";
+  return new Date(ms).toLocaleString();
+}
+
+function extractText(payload) {
+  if (!payload) return "";
+  const m = String(payload).match(/text:\s*\"([^\"]*)\"/i);
+  if (m) return m[1];
+  return String(payload);
+}
+
+async function loadChat() {
+  const el = document.getElementById("chat_list");
+  try {
+    const res = await fetch("/api/packets?portnum=1&limit=50");
+    if (!res.ok) {
+      el.innerHTML = `<div class="muted">Failed to load chat (${res.status})</div>`;
+      return;
+    }
+    const data = await res.json();
+    const packets = (data.packets || []).slice().reverse();
+    if (!packets.length) {
+      el.innerHTML = `<div class="muted">No text packets yet.</div>`;
+      return;
+    }
+
+    el.innerHTML = packets.map((pkt) => {
+      const text = extractText(pkt.payload);
+      const from = pkt.from_node_id ?? "-";
+      const when = formatLocalTime(pkt.import_time_us);
+      return `
+        <div class="chat-msg">
+          <div class="chat-meta">From ${escapeHtml(from)} · ${escapeHtml(when)}</div>
+          <div class="chat-text">${escapeHtml(text)}</div>
+        </div>
+      `;
+    }).join("");
+  } catch (err) {
+    console.error("Chat load failed:", err);
+    el.innerHTML = `<div class="muted">Failed to load chat.</div>`;
+  }
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  loadChat();
+  setInterval(loadChat, 5000);
+});
+</script>
+{% endblock %}

@@ -57,6 +57,7 @@ PORTNUM_NAMES: dict[int, str] = {
 
 
 PORTNUM_ALIASES: dict[int, tuple[str, ...]] = {
+    1: ("text",),
     3: ("position", "location"),
     4: ("nodeinfo", "node info"),
     67: ("telemetry",),
@@ -394,6 +395,9 @@ class MeshViewHandler(BaseHTTPRequestHandler):
         if parsed.path == "/map":
             self._handle_map()
             return
+        if parsed.path in ("/chat", "/ch"):
+            self._handle_chat()
+            return
         if parsed.path == "/about":
             self._handle_about()
             return
@@ -444,6 +448,10 @@ class MeshViewHandler(BaseHTTPRequestHandler):
 
     def _handle_map(self) -> None:
         body = self._render_template("map.html", title="meshviewlite map")
+        self._send_html(200, body)
+
+    def _handle_chat(self) -> None:
+        body = self._render_template("chat.html", title="meshviewlite chat")
         self._send_html(200, body)
 
     def _handle_about(self) -> None:
@@ -602,7 +610,7 @@ class MeshViewHandler(BaseHTTPRequestHandler):
             limit = int(limit_raw) if limit_raw else 200
         except ValueError:
             limit = 200
-        limit = min(max(limit, 1), 5000)
+        limit = min(max(limit, 1), 50)
 
         where: list[str] = []
         params: list[Any] = []
