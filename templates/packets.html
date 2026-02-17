@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+
+{% block head %}
+<style>
+.packet-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  color: #e4e9ee;
+}
+.packet-table th, .packet-table td {
+  border: 1px solid #3a3f44;
+  padding: 6px 10px;
+  text-align: left;
+}
+.packet-table th {
+  background-color: #1f2226;
+  font-weight: bold;
+}
+.packet-table tr:nth-of-type(odd) { background-color: #272b2f; }
+.packet-table tr:nth-of-type(even) { background-color: #212529; }
+.port-tag {
+  padding: 2px 6px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  color: #fff;
+}
+.payload-row { display: none; background-color: #1b1e22; }
+.payload-cell {
+  padding: 8px 12px;
+  font-family: monospace;
+  white-space: pre-wrap;
+  color: #b0bec5;
+}
+.packet-table tr.expanded + .payload-row { display: table-row; }
+.toggle-btn { cursor: pointer; color: #aaa; margin-right: 6px; }
+.toggle-btn:hover { color: #fff; }
+.controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.controls-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+</style>
+<script src="/static/portmaps.js"></script>
+{% endblock %}
+
+{% block body %}
+<div class="panel">
+  <div class="controls">
+    <h2 style="margin:0;">Packets</h2>
+    <div class="controls-right">
+      <span id="packet_count" class="pill">Loading...</span>
+      <button class="btn" id="refresh_btn" type="button">Refresh</button>
+    </div>
+  </div>
+  <div class="muted" style="margin-bottom:10px;">Latest packets from all nodes (max 50).</div>
+  <table class="packet-table">
+    <thead>
+      <tr><th>Time</th><th>Packet ID</th><th>From</th><th>To</th><th>Port</th><th>Channel</th></tr>
+    </thead>
+    <tbody id="packet_list">
+      <tr><td colspan="6" class="muted">Loading packets...</td></tr>
+    </tbody>
+  </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const PORT_COLOR_MAP = window.PORT_COLOR_MAP || {};
+const PORT_LABEL_MAP = window.PORT_LABEL_MAP || {};
+
+function escapeHtml(text) {
+  return String(text ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function formatLocalTime(us){
+  if (!us) return "-";
+  return new Date(us / 1000).toLocaleString([], {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+}
+
+function portLabel(portnum) {
+  const color = PORT_COLOR_MAP[portnum] || "#6c757d";
+  const label = PORT_LABEL_MAP[portnum] || `Port ${portnum ?? "-"}`;
+  return `<span class="port-tag" style="background-color:${color}">${label}</span> <span class="muted">(${portnum ?? "-"})</span>`;
+}
+
+function nodeLink(id, labelOverride) {
+  if (id === null || id === undefined || id === "") return "-";
+  if (id === 4294967295) return "All";
+  const text = String(id);
+  const label = labelOverride && String(labelOverride).trim() ? String(labelOverride).trim() : text;
+  return /^\d+$/.test(text) ? `<a href="/node/${text}">${escapeHtml(label)}</a>` : escapeHtml(label);
+}
+
+async function loadPackets() {
+  const list = document.getElementById("packet_list");
+  const count = document.getElementById("packet_count");
+
+  try {
+    const res = await fetch("/api/packets?limit=50");
+    if (!res.ok) {
+      list.innerHTML = `<tr><td colspan="6" class="muted">Failed to load packets (${res.status})</td></tr>`;
+      count.textContent = "Error";
+      return;
+    }
+
+    const data = await res.json();
+    const packets = data.packets || [];
+    count.textContent = `Packets: ${packets.length}`;
+
+    if (!packets.length) {
+      list.innerHTML = `<tr><td colspan="6" class="muted">No packets found.</td></tr>`;
+      return;
+    }
+
+    list.innerHTML = packets.map((pkt) => {
+      const fromLabel = pkt.from_long_name || pkt.long_name;
+      const toLabel = pkt.to_long_name;
+      const payloadSafe = escapeHtml(pkt.payload || "-");
+      return `
+        <tr class="packet-row">
+          <td>${formatLocalTime(pkt.import_time_us)}</td>
+          <td><span class="toggle-btn">▶</span>${escapeHtml(pkt.id)}</td>
+          <td>${nodeLink(pkt.from_node_id, fromLabel)}</td>
+          <td>${nodeLink(pkt.to_node_id, toLabel)}</td>
+          <td>${portLabel(pkt.portnum)}</td>
+          <td>${escapeHtml(pkt.channel || "-")}</td>
+        </tr>
+        <tr class="payload-row">
+          <td colspan="6" class="payload-cell">${payloadSafe}</td>
+        </tr>
+      `;
+    }).join("");
+  } catch (err) {
+    console.error("Failed to load packets:", err);
+    list.innerHTML = `<tr><td colspan="6" class="muted">Failed to load packets</td></tr>`;
+    count.textContent = "Error";
+  }
+}
+
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest(".toggle-btn");
+  if (!btn) return;
+  const row = btn.closest(".packet-row");
+  row.classList.toggle("expanded");
+  btn.textContent = row.classList.contains("expanded") ? "▼" : "▶";
+});
+
+document.addEventListener("DOMContentLoaded", () => {
+  document.getElementById("refresh_btn").addEventListener("click", loadPackets);
+  loadPackets();
+});
+</script>
+{% endblock %}

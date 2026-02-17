@@ -46,7 +46,8 @@ L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
 
 const cluster = L.markerClusterGroup({
   showCoverageOnHover: false,
-  maxClusterRadius: 45
+  maxClusterRadius: 15,
+  disableClusteringAtZoom: 7
 });
 
 function makeNodeIcon() {

@@ -545,7 +545,7 @@ def infer_node(payload: dict[str, Any], channel: str | None) -> dict[str, Any] |
     - telemetry: only last_seen and raw payload are updated by upsert
     """
     nested_payload = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
-    packet_type_raw = payload.get("type")
+    packet_type_raw = payload.get("type") or infer_packet_type(payload)
     packet_type = (
         str(packet_type_raw).strip().lower().replace("_", "").replace(" ", "").replace("(", "").replace(")", "")
         if packet_type_raw is not None

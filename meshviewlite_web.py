@@ -392,6 +392,9 @@ class MeshViewHandler(BaseHTTPRequestHandler):
         if parsed.path == "/":
             self._handle_index(parsed)
             return
+        if parsed.path == "/packets":
+            self._handle_packets_page()
+            return
         if parsed.path == "/map":
             self._handle_map()
             return
@@ -448,6 +451,10 @@ class MeshViewHandler(BaseHTTPRequestHandler):
 
     def _handle_map(self) -> None:
         body = self._render_template("map.html", title="meshviewlite map")
+        self._send_html(200, body)
+
+    def _handle_packets_page(self) -> None:
+        body = self._render_template("packets.html", title="meshviewlite packets")
         self._send_html(200, body)
 
     def _handle_chat(self) -> None:
@@ -690,8 +697,6 @@ class MeshViewHandler(BaseHTTPRequestHandler):
             packets.append(
                 {
                     "id": row["packet_id"],
-                    "packet_id": row["packet_id"],
-                    "db_id": row["db_id"],
                     "import_time_us": import_time_us,
                     "topic": row["topic"],
                     "packet_type": row["packet_type"],

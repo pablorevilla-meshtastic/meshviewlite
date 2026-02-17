@@ -55,6 +55,10 @@
 .packet-table tr.expanded + .payload-row { display: table-row; }
 .toggle-btn { cursor: pointer; color: #aaa; margin-right: 6px; }
 .toggle-btn:hover { color: #fff; }
+.chart-wrap {
+  width: 100%;
+  min-height: 280px;
+}
 @media (max-width: 900px) {
   .node-info { grid-template-columns: 1fr; }
 }
@@ -64,6 +68,7 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 {% endif %}
 <script src="/static/portmaps.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 {% endblock %}
 
 {% block body %}
@@ -96,6 +101,12 @@
   {% else %}
   <div class="warn">No known coordinates for this node yet.</div>
   {% endif %}
+</div>
+<div class="panel">
+  <h3 style="margin-top:0;">Packets per Day (Last 7 Days)</h3>
+  <div class="chart-wrap">
+    <canvas id="packets_week_chart"></canvas>
+  </div>
 </div>
 <div class="panel">
   <h3 style="margin-top:0;">Recent Packets</h3>
@@ -176,36 +187,11 @@ function portLabel(portnum) {
   return `<span class="port-tag" style="background-color:${color}">${label}</span> <span class="muted">(${portnum ?? "-"})</span>`;
 }
 
-const nodeNameCache = {};
-
-async function fetchNodeName(nodeId) {
-  if (!Number.isInteger(nodeId)) return null;
-  if (Object.prototype.hasOwnProperty.call(nodeNameCache, nodeId)) {
-    return nodeNameCache[nodeId];
-  }
-  try {
-    const res = await fetch(`/api/nodes?node_id=${encodeURIComponent(nodeId)}`);
-    if (!res.ok) {
-      nodeNameCache[nodeId] = null;
-      return null;
-    }
-    const data = await res.json();
-    const node = (data.nodes || [])[0];
-    const label = node ? (node.long_name || node.short_name || String(nodeId)) : null;
-    nodeNameCache[nodeId] = label;
-    return label;
-  } catch (err) {
-    nodeNameCache[nodeId] = null;
-    return null;
-  }
-}
-
-function nodeLink(id) {
+function nodeLink(id, labelOverride) {
   if (id === null || id === undefined || id === "") return "-";
   if (id === 4294967295) return "All";
   const text = String(id);
-  const asInt = Number.parseInt(text, 10);
-  const label = Number.isInteger(asInt) ? (nodeNameCache[asInt] || text) : text;
+  const label = labelOverride && String(labelOverride).trim() ? String(labelOverride).trim() : text;
   return /^\d+$/.test(text) ? `<a href="/node/${text}">${escapeHtml(label)}</a>` : escapeHtml(label);
 }
 
@@ -214,6 +200,83 @@ function escapeHtml(text) {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
+}
+
+function dayKeyFromDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+let weekChart = null;
+function renderWeekChart(packets) {
+  const canvas = document.getElementById("packets_week_chart");
+  if (!canvas || typeof Chart === "undefined") return;
+
+  const now = new Date();
+  const dayKeys = [];
+  const dayLabels = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(now);
+    d.setDate(d.getDate() - i);
+    dayKeys.push(dayKeyFromDate(d));
+    dayLabels.push(d.toLocaleDateString([], { month: "short", day: "numeric" }));
+  }
+
+  const counts = {};
+  const ports = new Set();
+  packets.forEach((pkt) => {
+    if (!pkt.import_time_us) return;
+    const d = new Date(pkt.import_time_us / 1000);
+    const key = dayKeyFromDate(d);
+    if (!dayKeys.includes(key)) return;
+    const port = Number(pkt.portnum ?? 0);
+    ports.add(port);
+    counts[port] = counts[port] || {};
+    counts[port][key] = (counts[port][key] || 0) + 1;
+  });
+
+  const datasets = Array.from(ports)
+    .sort((a, b) => a - b)
+    .map((port) => ({
+      label: PORT_LABEL_MAP[port] || `Port ${port}`,
+      data: dayKeys.map((k) => counts[port]?.[k] || 0),
+      backgroundColor: PORT_COLOR_MAP[port] || "#6c757d",
+      borderColor: PORT_COLOR_MAP[port] || "#6c757d",
+      borderWidth: 1,
+    }));
+
+  if (weekChart) weekChart.destroy();
+  weekChart = new Chart(canvas, {
+    type: "bar",
+    data: {
+      labels: dayLabels,
+      datasets
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          labels: { color: "#d6e2ee" }
+        }
+      },
+      scales: {
+        x: {
+          stacked: true,
+          ticks: { color: "#d6e2ee" },
+          grid: { color: "rgba(214,226,238,0.1)" }
+        },
+        y: {
+          stacked: true,
+          beginAtZero: true,
+          ticks: { color: "#d6e2ee" },
+          grid: { color: "rgba(214,226,238,0.1)" }
+        }
+      }
+    }
+  });
 }
 
 async function loadPackets() {
@@ -228,7 +291,7 @@ async function loadPackets() {
 
   const url = new URL("/api/packets", window.location.origin);
   url.searchParams.set("node_id", String(nodeId));
-  url.searchParams.set("limit", "1000");
+  url.searchParams.set("limit", "50");
 
   try {
     const res = await fetch(url.toString());
@@ -238,30 +301,22 @@ async function loadPackets() {
     }
     const data = await res.json();
     const packets = data.packets || [];
+    renderWeekChart(packets);
     if (!packets.length) {
       list.innerHTML = `<tr><td colspan="6" class="muted">No packets found for this node.</td></tr>`;
       return;
     }
 
-    const ids = new Set();
-    packets.forEach((pkt) => {
-      const fromId = Number.parseInt(String(pkt.from_node_id ?? ""), 10);
-      const toId = Number.parseInt(String(pkt.to_node_id ?? ""), 10);
-      if (Number.isInteger(fromId) && fromId !== 4294967295) ids.add(fromId);
-      if (Number.isInteger(toId) && toId !== 4294967295) ids.add(toId);
-    });
-    await Promise.all(Array.from(ids).map((id) => fetchNodeName(id)));
-
     packets.forEach((pkt) => {
       const safePayload = escapeHtml(pkt.payload || "");
-      const pid = pkt.packet_id ?? "";
-      const rowKey = pkt.packet_id ?? "";
+      const pid = pkt.id ?? "";
+      const rowKey = pkt.id ?? "";
       list.insertAdjacentHTML("beforeend", `
         <tr class="packet-row">
           <td>${formatLocalTime(pkt.import_time_us)}</td>
           <td><span class="toggle-btn">▶</span>${pid}</td>
-          <td>${nodeLink(pkt.from_node_id)}</td>
-          <td>${nodeLink(pkt.to_node_id)}</td>
+          <td>${nodeLink(pkt.from_node_id, pkt.from_long_name || pkt.long_name)}</td>
+          <td>${nodeLink(pkt.to_node_id, pkt.to_long_name)}</td>
           <td>${portLabel(pkt.portnum)}</td>
           <td>${escapeHtml(pkt.channel || "-")}</td>
         </tr>
