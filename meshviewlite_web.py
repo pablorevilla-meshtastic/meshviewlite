@@ -7,7 +7,7 @@ import mimetypes
 import re
 import sqlite3
 import tomllib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from jinja2 import Environment, FileSystemLoader, TemplateNotFound, select_autoescape
 from meshtastic.protobuf.config_pb2 import Config
@@ -401,11 +401,17 @@ class MeshViewHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/packets":
             self._handle_api_packets(parsed)
             return
+        if parsed.path == "/api/stats":
+            self._handle_api_stats(parsed)
+            return
         if parsed.path == "/":
             self._handle_index(parsed)
             return
         if parsed.path == "/packets":
             self._handle_packets_page()
+            return
+        if parsed.path == "/stats":
+            self._handle_stats_page()
             return
         if parsed.path == "/map":
             self._handle_map()
@@ -477,22 +483,47 @@ class MeshViewHandler(BaseHTTPRequestHandler):
         body = self._render_template("about.html")
         self._send_html(200, body)
 
+    def _handle_stats_page(self) -> None:
+        body = self._render_template("stats.html")
+        self._send_html(200, body)
+
     def _handle_api_nodes(self) -> None:
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
         node_id_filter_raw = (query.get("node_id", [""])[0] or "").strip()
+        q_raw = (query.get("q", [""])[0] or "").strip().lower()
+        limit_raw = (query.get("limit", [""])[0] or "").strip()
+        page_raw = (query.get("page", [""])[0] or "").strip()
         include_sparse = (query.get("include_sparse", ["0"])[0] or "0").strip() in (
             "1",
             "true",
             "yes",
             "on",
         )
+        limit: int | None
+        if limit_raw:
+            try:
+                limit = int(limit_raw)
+            except ValueError:
+                limit = 50
+            limit = min(max(limit, 1), 200)
+        else:
+            limit = None
+        try:
+            page = int(page_raw) if page_raw else 1
+        except ValueError:
+            page = 1
+        page = max(1, page)
+        offset = (page - 1) * limit if limit is not None else 0
         node_id_filter_value: str | None = None
         if node_id_filter_raw:
             try:
                 node_id_filter_value = str(int(node_id_filter_raw, 10))
             except ValueError:
-                self._send_json(200, {"nodes": []})
+                self._send_json(
+                    200,
+                    {"nodes": [], "total": 0, "limit": limit, "page": page, "has_prev": False, "has_next": False},
+                )
                 return
 
         with self._db() as conn:
@@ -597,25 +628,44 @@ class MeshViewHandler(BaseHTTPRequestHandler):
             if not include_sparse and not (has_profile or meaningful_channel):
                 continue
 
-            nodes.append(
-                {
-                    "id": node_id_text or None,
-                    "node_id": node_id_num,
-                    "long_name": long_name,
-                    "short_name": short_name,
-                    "hw_model": hw_model,
-                    "firmware": None,
-                    "role": role,
-                    "last_lat": last_lat,
-                    "last_long": last_long,
-                    "channel": channel,
-                    "is_mqtt_gateway": None,
-                    "first_seen_us": first_seen_us,
-                    "last_seen_us": last_seen_us,
-                }
-            )
+            node = {
+                "id": node_id_text or None,
+                "node_id": node_id_num,
+                "long_name": long_name,
+                "short_name": short_name,
+                "hw_model": hw_model,
+                "firmware": None,
+                "role": role,
+                "last_lat": last_lat,
+                "last_long": last_long,
+                "channel": channel,
+                "is_mqtt_gateway": None,
+                "first_seen_us": first_seen_us,
+                "last_seen_us": last_seen_us,
+            }
+            if q_raw:
+                haystack = " ".join(
+                    str(node.get(k) or "").lower()
+                    for k in ("id", "node_id", "long_name", "short_name", "hw_model", "role", "channel")
+                )
+                if q_raw not in haystack:
+                    continue
+            nodes.append(node)
 
-        self._send_json(200, {"nodes": nodes})
+        total_nodes = len(nodes)
+        if limit is not None:
+            nodes = nodes[offset : offset + limit]
+        self._send_json(
+            200,
+            {
+                "nodes": nodes,
+                "total": total_nodes,
+                "limit": limit,
+                "page": page,
+                "has_prev": limit is not None and page > 1,
+                "has_next": limit is not None and (offset + limit) < total_nodes,
+            },
+        )
 
     def _handle_api_packets(self, parsed: Any) -> None:
         query = parse_qs(parsed.query)
@@ -724,6 +774,105 @@ class MeshViewHandler(BaseHTTPRequestHandler):
             )
 
         self._send_json(200, {"packets": packets})
+
+    def _handle_api_stats(self, parsed: Any) -> None:
+        query = parse_qs(parsed.query)
+        topic = (query.get("topic", [""])[0] or "").strip()
+        days_raw = (query.get("days", ["7"])[0] or "7").strip()
+        channels_limit_raw = (query.get("channels_limit", ["20"])[0] or "20").strip()
+
+        try:
+            days = int(days_raw)
+        except ValueError:
+            days = 7
+        days = min(max(days, 1), 30)
+
+        try:
+            channels_limit = int(channels_limit_raw)
+        except ValueError:
+            channels_limit = 20
+        channels_limit = min(max(channels_limit, 1), 50)
+
+        now = int(datetime.now(timezone.utc).timestamp())
+        since = now - (days * 24 * 60 * 60)
+
+        where_sql = "WHERE received_at >= ?"
+        params: list[Any] = [since]
+        if topic:
+            where_sql += " AND topic = ?"
+            params.append(topic)
+
+        with self._db() as conn:
+            row = conn.execute(
+                f"""
+                SELECT COUNT(*) AS packet_count, COUNT(DISTINCT from_id) AS active_nodes
+                FROM packets
+                {where_sql}
+                """,
+                params,
+            ).fetchone()
+            packets_total = int((row["packet_count"] if row else 0) or 0)
+            active_nodes_total = int((row["active_nodes"] if row else 0) or 0)
+
+            day_rows = conn.execute(
+                f"""
+                SELECT date(received_at, 'unixepoch') AS day_label, COUNT(*) AS packet_count
+                FROM packets
+                {where_sql}
+                GROUP BY date(received_at, 'unixepoch')
+                ORDER BY day_label ASC
+                """,
+                params,
+            ).fetchall()
+            packets_by_day = {str(r["day_label"]): int(r["packet_count"] or 0) for r in day_rows}
+
+            channel_rows = conn.execute(
+                f"""
+                SELECT COALESCE(NULLIF(channel, ''), '-') AS channel_name,
+                       COUNT(*) AS packet_count,
+                       COUNT(DISTINCT from_id) AS node_count
+                FROM packets
+                {where_sql}
+                GROUP BY COALESCE(NULLIF(channel, ''), '-')
+                ORDER BY packet_count DESC
+                LIMIT ?
+                """,
+                [*params, channels_limit],
+            ).fetchall()
+
+        channels = [
+            {
+                "channel": str(r["channel_name"] or "-"),
+                "packet_count": int(r["packet_count"] or 0),
+                "node_count": int(r["node_count"] or 0),
+            }
+            for r in channel_rows
+        ]
+
+        day_start_today = datetime.fromtimestamp(now, timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        daily: list[dict[str, Any]] = []
+        for offset in range(days - 1, -1, -1):
+            day_dt = day_start_today - timedelta(days=offset)
+            day_label = day_dt.strftime("%Y-%m-%d")
+            daily.append({"day_utc": day_label, "packet_count": int(packets_by_day.get(day_label, 0))})
+
+        self._send_json(
+            200,
+            {
+                "stats": {
+                    "as_of_epoch": now,
+                    "window_days": days,
+                    "topic": topic or None,
+                    "packets_total": packets_total,
+                    "active_nodes": active_nodes_total,
+                    "channels_seen": len(channels),
+                    "daily": daily,
+                    "channels": channels,
+                }
+            },
+        )
 
     def _handle_node(self, node_id: str) -> None:
         candidate_ids: list[str] = []

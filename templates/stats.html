@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+
+{% block head %}
+<style>
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(140px, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.stat-card {
+  background: #121920;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+}
+.stat-label { color: var(--muted); font-size: 0.82rem; }
+.stat-value { font-size: 1.25rem; font-weight: 700; }
+.stats-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+.stats-table th, .stats-table td {
+  border: 1px solid var(--line);
+  padding: 7px 8px;
+  text-align: left;
+}
+.stats-table th { background: #121920; }
+.stats-table tr:nth-child(even) td { background: #121920; }
+.split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+@media (max-width: 900px) {
+  .stats-grid { grid-template-columns: 1fr; }
+  .split { grid-template-columns: 1fr; }
+}
+</style>
+{% endblock %}
+
+{% block body %}
+<div class="panel">
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;">
+    <h2 style="margin:0;">Stats</h2>
+    <button class="btn" id="refresh_stats" type="button">Refresh</button>
+  </div>
+  <div class="muted" id="stats_status">Loading last 7 days...</div>
+</div>
+
+<div class="stats-grid">
+  <div class="stat-card">
+    <div class="stat-label">Packets (7d)</div>
+    <div class="stat-value" id="packets_7d">-</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Active Nodes (7d)</div>
+    <div class="stat-value" id="nodes_7d">-</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Channels Seen (7d)</div>
+    <div class="stat-value" id="channels_7d">-</div>
+  </div>
+</div>
+
+<div class="split">
+  <div class="panel">
+    <h3 style="margin-top:0;">Packet Count Per Day</h3>
+    <table class="stats-table">
+      <thead>
+        <tr><th>Day (UTC)</th><th>Packets</th></tr>
+      </thead>
+      <tbody id="daily_table">
+        <tr><td colspan="2" class="muted">Loading...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="panel">
+    <h3 style="margin-top:0;">Channel Breakdown (7d)</h3>
+    <table class="stats-table">
+      <thead>
+        <tr><th>Channel</th><th>Packets</th><th>Nodes</th></tr>
+      </thead>
+      <tbody id="channel_table">
+        <tr><td colspan="3" class="muted">Loading...</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function escapeHtml(text) {
+  return String(text ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+async function loadStats() {
+  const statusEl = document.getElementById("stats_status");
+  const dailyTable = document.getElementById("daily_table");
+  const channelTable = document.getElementById("channel_table");
+  const packetsEl = document.getElementById("packets_7d");
+  const nodesEl = document.getElementById("nodes_7d");
+  const channelsEl = document.getElementById("channels_7d");
+  const days = 7;
+
+  statusEl.textContent = "Loading last 7 days...";
+
+  try {
+    const qs = new URLSearchParams({ days: String(days), channels_limit: "20" });
+    const res = await fetch(`/api/stats?${qs.toString()}`);
+    if (!res.ok) {
+      throw new Error(`stats fetch failed (${res.status})`);
+    }
+    const data = await res.json();
+    const stats = data.stats || {};
+
+    packetsEl.textContent = String(stats.packets_total ?? 0);
+    nodesEl.textContent = String(stats.active_nodes ?? 0);
+    channelsEl.textContent = String(stats.channels_seen ?? 0);
+
+    const dayRows = Array.isArray(stats.daily) ? stats.daily : [];
+    dailyTable.innerHTML = dayRows.map((row) => (
+      `<tr><td>${escapeHtml(row.day_utc)}</td><td>${row.packet_count ?? 0}</td></tr>`
+    )).join("");
+
+    const channelRows = Array.isArray(stats.channels) ? stats.channels : [];
+    if (!channelRows.length) {
+      channelTable.innerHTML = `<tr><td colspan="3" class="muted">No channel data in window.</td></tr>`;
+    } else {
+      channelTable.innerHTML = channelRows.map((row) => (
+        `<tr><td>${escapeHtml(row.channel)}</td><td>${row.packet_count ?? 0}</td><td>${row.node_count ?? 0}</td></tr>`
+      )).join("");
+    }
+
+    statusEl.textContent = `Updated ${new Date().toLocaleString()}.`;
+  } catch (err) {
+    console.error(err);
+    statusEl.textContent = "Failed to load stats.";
+    dailyTable.innerHTML = `<tr><td colspan="2" class="muted">Failed to load.</td></tr>`;
+    channelTable.innerHTML = `<tr><td colspan="3" class="muted">Failed to load.</td></tr>`;
+    packetsEl.textContent = "-";
+    nodesEl.textContent = "-";
+    channelsEl.textContent = "-";
+  }
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  document.getElementById("refresh_stats").addEventListener("click", loadStats);
+  loadStats();
+});
+</script>
+{% endblock %}

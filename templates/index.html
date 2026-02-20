@@ -11,6 +11,11 @@
       <tr><td colspan="7" class="muted">Loading nodes...</td></tr>
     </tbody>
   </table>
+  <div style="display:flex;gap:10px;align-items:center;justify-content:flex-end;margin-top:10px;">
+    <a id="prev_page" class="btn" href="#" style="text-decoration:none;">Prev</a>
+    <span id="page_info" class="muted">Page 1</span>
+    <a id="next_page" class="btn" href="#" style="text-decoration:none;">Next</a>
+  </div>
 </div>
 {% endblock %}
 
@@ -30,44 +35,56 @@ function formatLocalTime(us) {
   return new Date(epochMs).toLocaleString();
 }
 
-function nodeMatchesQuery(node, q) {
-  if (!q) return true;
-  const hay = [
-    node.node_id,
-    node.id,
-    node.long_name,
-    node.short_name,
-    node.hw_model,
-    node.role,
-    node.channel
-  ]
-    .map((v) => String(v ?? "").toLowerCase())
-    .join(" ");
-  return hay.includes(q);
-}
-
 async function loadNodes() {
   const tbody = document.getElementById("node_list");
   const countBadge = document.getElementById("node_count_badge");
+  const prevPage = document.getElementById("prev_page");
+  const nextPage = document.getElementById("next_page");
+  const pageInfo = document.getElementById("page_info");
   const query = new URLSearchParams(window.location.search).get("q");
   const q = (query || "").trim().toLowerCase();
+  const pageRaw = new URLSearchParams(window.location.search).get("page");
+  const page = Math.max(parseInt(pageRaw || "1", 10) || 1, 1);
 
   try {
-    const res = await fetch("/api/nodes");
+    const apiUrl = new URL("/api/nodes", window.location.origin);
+    apiUrl.searchParams.set("limit", "50");
+    apiUrl.searchParams.set("page", String(page));
+    if (q) apiUrl.searchParams.set("q", q);
+
+    const res = await fetch(apiUrl.toString());
     if (!res.ok) {
       tbody.innerHTML = `<tr><td colspan="7" class="muted">Failed to load nodes (${res.status})</td></tr>`;
       return;
     }
     const data = await res.json();
-    const nodes = (data.nodes || []).filter((n) => nodeMatchesQuery(n, q));
-    if (countBadge) countBadge.textContent = `Nodes: ${nodes.length}`;
+    const nodes = data.nodes || [];
+    const total = Number(data.total || nodes.length);
+    const hasPrev = Boolean(data.has_prev);
+    const hasNext = Boolean(data.has_next);
+    if (countBadge) countBadge.textContent = `Nodes: ${total}`;
+    if (pageInfo) pageInfo.textContent = `Page ${page}`;
+    const qsFor = (p) => {
+      const sp = new URLSearchParams(window.location.search);
+      if (q) sp.set("q", q); else sp.delete("q");
+      sp.set("page", String(p));
+      return `/?${sp.toString()}`;
+    };
+    if (prevPage) {
+      prevPage.href = hasPrev ? qsFor(page - 1) : "#";
+      prevPage.style.pointerEvents = hasPrev ? "auto" : "none";
+      prevPage.style.opacity = hasPrev ? "1" : "0.5";
+    }
+    if (nextPage) {
+      nextPage.href = hasNext ? qsFor(page + 1) : "#";
+      nextPage.style.pointerEvents = hasNext ? "auto" : "none";
+      nextPage.style.opacity = hasNext ? "1" : "0.5";
+    }
 
     if (!nodes.length) {
       tbody.innerHTML = `<tr><td colspan="7" class="muted">No nodes found.</td></tr>`;
       return;
     }
-
-    nodes.sort((a, b) => (b.last_seen_us || 0) - (a.last_seen_us || 0));
 
     tbody.innerHTML = nodes.map((n) => {
       const nodeId = n.node_id ?? "";
@@ -84,6 +101,7 @@ async function loadNodes() {
         </tr>
       `;
     }).join("");
+
   } catch (err) {
     console.error("Failed to load nodes", err);
     if (countBadge) countBadge.textContent = "Nodes: ?";
